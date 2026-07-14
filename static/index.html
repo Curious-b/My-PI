@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>My-PI · Private LLM Wiki</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">🧠 <span>My-PI</span><small>your private second brain</small></div>
+    <div id="llm-status" class="status status--unknown" title="Local LLM status">
+      ● checking LLM…
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="search-box">
+        <input id="search" type="text" placeholder="Search notes…" autocomplete="off" />
+      </div>
+      <button id="new-note" class="btn btn--primary">+ New note</button>
+      <ul id="note-list" class="note-list"></ul>
+    </aside>
+
+    <!-- Main -->
+    <main class="main">
+      <nav class="tabs">
+        <button class="tab active" data-tab="graph">Graph</button>
+        <button class="tab" data-tab="note">Note</button>
+        <button class="tab" data-tab="ask">Ask</button>
+        <button class="tab" data-tab="generate">Generate</button>
+      </nav>
+
+      <!-- Graph view -->
+      <section id="tab-graph" class="panel active">
+        <div class="graph-toolbar">
+          <label><input type="checkbox" id="show-tags" checked /> show tags</label>
+          <button id="refresh-graph" class="btn">⟳ refresh</button>
+          <span class="hint">drag to pan · scroll to zoom · click a node to open</span>
+        </div>
+        <canvas id="graph"></canvas>
+      </section>
+
+      <!-- Note editor -->
+      <section id="tab-note" class="panel">
+        <div class="note-editor">
+          <input id="note-title" class="note-title" placeholder="Note title" />
+          <input id="note-tags" class="note-tags" placeholder="tags, comma, separated" />
+          <textarea id="note-body" class="note-body"
+            placeholder="Write in Markdown. Link notes with [[Other Note]]. Add #tags."></textarea>
+          <div class="note-actions">
+            <button id="save-note" class="btn btn--primary">💾 Save</button>
+            <button id="delete-note" class="btn btn--danger">🗑 Delete</button>
+            <span id="note-msg" class="msg"></span>
+          </div>
+        </div>
+        <div id="note-preview" class="note-preview"></div>
+      </section>
+
+      <!-- Ask (RAG query) -->
+      <section id="tab-ask" class="panel">
+        <div class="ask-box">
+          <textarea id="ask-input" placeholder="Ask a question about your knowledge base…"></textarea>
+          <button id="ask-btn" class="btn btn--primary">Ask my wiki</button>
+        </div>
+        <div id="ask-result" class="result"></div>
+      </section>
+
+      <!-- Generate (custom format) -->
+      <section id="tab-generate" class="panel">
+        <div class="gen-box">
+          <input id="gen-topic" placeholder="Topic for the new note…" />
+          <label class="gen-label">Custom format / template</label>
+          <textarea id="gen-format" class="gen-format"></textarea>
+          <div class="gen-actions">
+            <label><input type="checkbox" id="gen-save" /> save to vault</label>
+            <button id="gen-btn" class="btn btn--primary">Generate note</button>
+          </div>
+        </div>
+        <div id="gen-result" class="result"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

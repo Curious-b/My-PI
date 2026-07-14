@@ -1,0 +1,19 @@
+# ---- Core web framework (required) ----
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+pydantic>=2.6
+
+# ---- LLM orchestration (open-source, local via Ollama) ----
+# DSPy talks to Ollama through LiteLLM under the hood. No API keys, no cost.
+dspy-ai>=2.5.0
+
+# ---- Local, free vector search (optional but recommended) ----
+# If these are not installed the app automatically falls back to a
+# pure-Python keyword search, so nothing breaks.
+chromadb>=0.5.0
+sentence-transformers>=2.7.0
+
+# ---- Markdown / frontmatter parsing ----
+python-frontmatter>=1.1.0
+markdown>=3.6

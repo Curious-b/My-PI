@@ -1,0 +1,31 @@
+# ============================================================
+#  PRIVACY FIRST
+#  Your personal knowledge base is NEVER committed or pushed.
+#  Everything under vault/ stays on your machine only.
+# ============================================================
+vault/*
+!vault/.gitkeep
+!vault/Welcome.md
+
+# Local vector index / embeddings cache
+.chroma/
+storage/
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# Environment / secrets
+.env
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
