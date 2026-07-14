@@ -9,7 +9,9 @@ local model is unavailable, the callers degrade gracefully (see main.py).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+import re
+from dataclasses import dataclass, field
 
 from .llm import configure_lm
 from .retrieval import Hit
@@ -67,6 +69,28 @@ def _build_modules():
         note: str = dspy.OutputField(desc="The note body in Markdown, no frontmatter")
         tags: str = dspy.OutputField(desc="Comma-separated list of tags")
 
+    class ExtractFields(dspy.Signature):
+        """Extract information from the document content strictly according to
+        the given JSON Schema. Output ONLY a single valid JSON object (no
+        markdown code fences, no commentary) whose keys and types conform to
+        the schema. If a value cannot be found in the content, use null. Do
+        not invent facts that are not present in the content."""
+
+        source: str = dspy.InputField(desc="The source document's filename")
+        content: str = dspy.InputField(desc="Extracted text (or summaries) of the document")
+        schema_json: str = dspy.InputField(desc="The JSON Schema (as text) to conform to")
+        data_json: str = dspy.OutputField(desc="A single JSON object matching schema_json, nothing else")
+
+    class RepairFields(dspy.Signature):
+        """The previous JSON output failed to validate against the schema. Fix
+        it so it validates, preserving as much of the original extracted
+        information as possible. Output ONLY the corrected JSON object."""
+
+        schema_json: str = dspy.InputField()
+        previous_json: str = dspy.InputField()
+        errors: str = dspy.InputField(desc="Validation errors describing what is wrong")
+        data_json: str = dspy.OutputField(desc="The corrected JSON object, nothing else")
+
     class AskWiki(dspy.Module):
         def __init__(self):
             super().__init__()
@@ -92,7 +116,20 @@ def _build_modules():
         def forward(self, source: str, content: str, format_spec: str):
             return self.compile(source=source, content=content, format_spec=format_spec)
 
-    return {"ask": AskWiki(), "draft": DraftNote(), "compile": CompileDoc()}
+    class ExtractDoc(dspy.Module):
+        def __init__(self):
+            super().__init__()
+            self.summarise = dspy.ChainOfThought(SummariseChunk)
+            self.extract = dspy.ChainOfThought(ExtractFields)
+            self.repair = dspy.ChainOfThought(RepairFields)
+
+        def forward(self, source: str, content: str, schema_json: str):
+            return self.extract(source=source, content=content, schema_json=schema_json)
+
+    return {
+        "ask": AskWiki(), "draft": DraftNote(),
+        "compile": CompileDoc(), "extract": ExtractDoc(),
+    }
 
 
 # Lazily-instantiated singletons.
@@ -204,3 +241,100 @@ def compile_document(source: str, text: str, format_spec: str,
     tags = [t.strip().lstrip("#") for t in raw_tags.replace("\n", ",").split(",") if t.strip()]
     title = (getattr(pred, "title", "") or source).strip()
     return Compiled(title=title, note=pred.note, tags=tags[:6])
+
+
+# --- Structured extraction (user-supplied JSON Schema) --------------------
+_FENCE_RE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
+
+
+def _parse_json_block(text: str) -> dict:
+    """Pull a JSON object out of raw LLM output.
+
+    Tolerates ```json fences and stray prose before/after the object, since
+    local open-source models don't always follow "output only JSON" strictly.
+    """
+    text = (text or "").strip()
+    fence = _FENCE_RE.match(text)
+    if fence:
+        text = fence.group(1)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return json.loads(text[start:end + 1])
+        raise
+
+
+def _schema_errors(data, schema: dict) -> list[str]:
+    """Validate `data` against a JSON Schema, returning human-readable errors."""
+    import jsonschema
+
+    validator_cls = jsonschema.validators.validator_for(schema, default=jsonschema.Draft7Validator)
+    validator = validator_cls(schema)
+    errors = []
+    for err in validator.iter_errors(data):
+        path = ".".join(str(p) for p in err.path) or "(root)"
+        errors.append(f"{path}: {err.message}")
+    return errors
+
+
+@dataclass
+class Extraction:
+    data: dict
+    errors: list = field(default_factory=list)
+    raw: str = ""
+
+
+def extract_structured(source: str, text: str, schema: dict,
+                        max_chunks: int = 8) -> Extraction:
+    """Extract JSON matching `schema` from a document's text via DSPy.
+
+    Long documents are summarised chunk-by-chunk first (like compile_document)
+    so the extraction call sees a manageable amount of context. If the model's
+    first attempt doesn't validate against the schema, one repair pass is
+    tried before giving up and returning the best-effort result with its
+    remaining validation errors attached.
+    """
+    modules = _ensure_modules()
+    extractor = modules["extract"]
+
+    chunks = _chunk(text)
+    if len(chunks) == 1:
+        content = text
+    else:
+        summaries = []
+        for chunk in chunks[:max_chunks]:
+            pred = extractor.summarise(source=source, chunk=chunk)
+            summaries.append(pred.summary)
+        if len(chunks) > max_chunks:
+            summaries.append("[…remaining sections omitted for length…]")
+        content = "\n\n".join(summaries)
+
+    schema_text = json.dumps(schema)
+    pred = extractor.extract(source=source, content=content, schema_json=schema_text)
+    raw = pred.data_json
+
+    try:
+        data = _parse_json_block(raw)
+        errors = _schema_errors(data, schema) if isinstance(data, dict) else ["Output was not a JSON object"]
+    except json.JSONDecodeError:
+        data, errors = {}, ["Output was not valid JSON"]
+
+    if errors:
+        pred2 = extractor.repair(
+            schema_json=schema_text, previous_json=raw, errors="; ".join(errors)
+        )
+        raw2 = pred2.data_json
+        try:
+            data2 = _parse_json_block(raw2)
+            errors2 = (
+                _schema_errors(data2, schema) if isinstance(data2, dict)
+                else ["Output was not a JSON object"]
+            )
+            if len(errors2) <= len(errors):  # only accept the repair if it's not worse
+                data, errors, raw = data2, errors2, raw2
+        except json.JSONDecodeError:
+            pass
+
+    return Extraction(data=data, errors=errors, raw=raw)

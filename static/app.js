@@ -252,15 +252,76 @@ function updateDzHint() {
     n ? `${n} file${n > 1 ? "s" : ""} selected` : "Drop files here or click to choose";
 }
 
+/* ---- Schema library (bring-your-own JSON Schema per document type) ---- */
+async function loadSchemas(selectName) {
+  const schemas = await api.get("/api/schemas");
+  const sel = $("#schema-select");
+  sel.innerHTML = '<option value="">— none (use free-text template) —</option>';
+  schemas.forEach((s) => {
+    const opt = document.createElement("option");
+    opt.value = s.name;
+    opt.textContent = s.title + (s.fields.length ? ` (${s.fields.length} fields)` : "");
+    opt.dataset.description = s.description || "";
+    opt.dataset.fields = s.fields.join(", ");
+    sel.appendChild(opt);
+  });
+  if (selectName) sel.value = selectName;
+  updateSchemaHint();
+}
+
+function updateSchemaHint() {
+  const sel = $("#schema-select");
+  const opt = sel.selectedOptions[0];
+  const hint = $("#schema-hint");
+  const formatBox = $("#upload-format");
+  const formatLabel = $("#upload-format-label");
+  const delBtn = $("#schema-delete-btn");
+  if (sel.value) {
+    hint.textContent = opt.dataset.fields
+      ? `Fields: ${opt.dataset.fields}` : (opt.dataset.description || "");
+    formatBox.disabled = true;
+    formatLabel.textContent = "Custom format / template (ignored — a schema is selected)";
+    delBtn.style.display = "";
+  } else {
+    hint.textContent = "";
+    formatBox.disabled = false;
+    formatLabel.textContent = "Custom format / template for the compiled note";
+    delBtn.style.display = "none";
+  }
+}
+$("#schema-select").addEventListener("change", updateSchemaHint);
+
+$("#schema-file").addEventListener("change", async () => {
+  const file = $("#schema-file").files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await fetch("/api/schemas", { method: "POST", body: fd });
+  const data = await res.json();
+  if (!res.ok) { alert("Schema rejected: " + (data.detail || "invalid schema")); return; }
+  await loadSchemas(data.name);
+  $("#schema-file").value = "";
+});
+
+$("#schema-delete-btn").addEventListener("click", async () => {
+  const name = $("#schema-select").value;
+  if (!name || !confirm(`Delete schema "${name}"? (This only removes the schema file, not any notes already created from it.)`)) return;
+  await api.del("/api/schemas/" + name);
+  await loadSchemas();
+});
+
+/* ---- Upload documents -> Markdown (free-text template or JSON schema) ---- */
 $("#upload-btn").addEventListener("click", async () => {
   const files = uploadInput.files;
   if (!files.length) { alert("Choose one or more files first."); return; }
+  const schemaName = $("#schema-select").value;
   const box = $("#upload-result");
-  box.innerHTML = `<div class="spinner">Extracting & compiling ${files.length} file(s) with DSPy… (large PDFs take a while)</div>`;
+  box.innerHTML = `<div class="spinner">Extracting${schemaName ? " & extracting fields per schema" : " & compiling"} for ${files.length} file(s) with DSPy… (large files take a while)</div>`;
 
   const fd = new FormData();
   for (const f of files) fd.append("files", f);
   fd.append("format_spec", $("#upload-format").value);
+  fd.append("schema_name", schemaName);
   fd.append("save", $("#upload-save").checked ? "true" : "false");
 
   let data;
@@ -282,9 +343,20 @@ function renderIngestResult(r) {
   let html = `<div class="ingest-card">
     <div class="ingest-head"><strong>${escapeHtml(r.title)}</strong>
       <span class="meta">${r.kind} · ${r.chars} chars${r.llm ? "" : " · raw (LLM offline)"}</span></div>`;
+  if (r.extraction) {
+    html += `<div class="meta">schema: ${escapeHtml(r.extraction.schema)} · `
+      + (r.extraction.valid
+        ? `<span style="color:var(--green)">validated ✓</span>`
+        : `<span class="warn" style="display:inline">⚠ ${r.extraction.errors.length} field issue(s): ${escapeHtml(r.extraction.errors.join("; "))}</span>`)
+      + `</div>`;
+  }
   if (r.tags && r.tags.length)
     html += `<div>${r.tags.map((t) => `<span class="tag-pill">#${t}</span>`).join("")}</div>`;
   html += `<div class="answer">${escapeHtml(r.note)}</div>`;
+  if (r.extraction) {
+    html += `<details><summary class="reasoning">raw extracted JSON</summary>
+      <div class="reasoning"><pre>${escapeHtml(JSON.stringify(r.extraction.data, null, 2))}</pre></div></details>`;
+  }
   if (r.saved)
     html += `<p class="msg">Saved as <span class="chip" data-slug="${r.saved}">${r.saved}</span> ✓</p>`;
   return html + `</div>`;
@@ -450,6 +522,7 @@ const graph = (() => {
 /* ---------------- Boot ---------------- */
 (async function init() {
   await loadNotes();
+  await loadSchemas();
   await graph.reload();
   graph.resize();
   refreshStatus();

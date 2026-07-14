@@ -29,6 +29,7 @@ class Settings:
     port: int = int(os.getenv("PORT", "8000"))
 
     vault_dir: Path = PROJECT_ROOT / os.getenv("VAULT_DIR", "vault")
+    schema_dir: Path = PROJECT_ROOT / os.getenv("SCHEMA_DIR", "schemas")
 
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     llm_model: str = os.getenv("LLM_MODEL", "ollama_chat/llama3.1")

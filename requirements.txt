@@ -24,3 +24,6 @@ markdown>=3.6
 pypdf>=4.2.0
 python-docx>=1.1.0
 openpyxl>=3.1.0
+
+# ---- Structured extraction against user-supplied JSON Schema files ----
+jsonschema>=4.21.0

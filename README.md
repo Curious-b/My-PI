@@ -23,6 +23,7 @@ powered by **open-source models running on your own machine** via
 | **DSPy framework** | Typed DSPy `Signature`s + `ChainOfThought` modules power both Q&A and note generation (`app/dspy_modules.py`). |
 | **Generate files in a custom format** | Give a template in the *Generate* tab; the model fills it in and (optionally) saves a new linked note. |
 | **Upload PDF / Word / Excel → Markdown** | The *Upload* tab extracts text from your documents and DSPy compiles each into a clean, structured `.md` note (long files are map-reduced). |
+| **Extract to *your* format, using *your* JSON Schema** | Upload your own JSON Schema file per document type; DSPy extracts exactly those fields, validates them, self-repairs invalid output, then renders the result to Markdown. |
 | **Query the knowledge base** | Retrieval-Augmented Generation over your notes in the *Ask* tab, with cited sources. |
 | A brain that **keeps growing** | Just keep adding Markdown files — the index, search, and graph update automatically. |
 
@@ -69,6 +70,23 @@ once Ollama is available.
   your template. Long documents are summarised chunk-by-chunk, then composed.
   Without Ollama running you still get the raw extracted text back.
 
+  **Bring your own JSON Schema.** If you have a set of JSON Schema files
+  (one per document type — e.g. `district-analysis.json`, `invoice.json`),
+  upload them once via "+ Upload schema" in the Upload tab. Then, when
+  uploading a matching document, pick that schema from the dropdown instead
+  of typing a free-text template. My-PI will:
+  1. Ask the local LLM (via DSPy) to extract **exactly** the fields your
+     schema defines, as JSON.
+  2. Validate the result against your schema (using `jsonschema`).
+  3. If validation fails, automatically ask the model to repair it once.
+  4. Render the validated JSON into readable Markdown — headings for nested
+     objects, tables for lists of records, bullets for lists of values —
+     using your schema's `title` on each property as the field label.
+
+  Your schema files are stored locally in `schemas/` (git-ignored, same
+  privacy model as the vault) — nothing is invented on your behalf; the
+  fields extracted are exactly the ones you defined.
+
 ---
 
 ## 🧩 Architecture
@@ -108,7 +126,10 @@ EMBEDDING_MODEL=all-MiniLM-L6-v2
 | GET | `/api/search?q=…` | retrieval only (no LLM) |
 | POST | `/api/query` | RAG question answering |
 | POST | `/api/generate` | generate a note in a custom format |
-| POST | `/api/ingest` | upload documents → compiled Markdown notes |
+| POST | `/api/ingest` | upload documents → compiled Markdown notes (optionally `schema_name` for structured extraction) |
+| GET | `/api/schemas` | list uploaded JSON Schema templates |
+| POST | `/api/schemas` | upload a JSON Schema file |
+| DELETE | `/api/schemas/{name}` | remove a JSON Schema template |
 | GET | `/api/status` | vault + retriever + LLM health |
 
 ---

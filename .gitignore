@@ -7,6 +7,10 @@ vault/*
 !vault/.gitkeep
 !vault/Welcome.md
 
+# Your uploaded JSON Schema template files — kept local, same as the vault.
+schemas/*
+!schemas/.gitkeep
+
 # Local vector index / embeddings cache
 .chroma/
 storage/

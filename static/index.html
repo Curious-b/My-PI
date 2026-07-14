@@ -93,7 +93,20 @@
               accept=".pdf,.docx,.doc,.xlsx,.xlsm,.xls,.csv,.txt,.md,.markdown" />
             <span class="dz-hint">Drop files here or click to choose</span>
           </div>
-          <label class="gen-label">Custom format / template for the compiled note</label>
+
+          <label class="gen-label">Extraction schema (optional) — upload your own JSON Schema
+            file per document type to force structured field extraction; otherwise the
+            free-text template below is used.</label>
+          <div class="schema-row">
+            <select id="schema-select"><option value="">— none (use free-text template) —</option></select>
+            <label class="btn schema-upload-btn">+ Upload schema
+              <input id="schema-file" type="file" accept=".json" hidden />
+            </label>
+            <button id="schema-delete-btn" class="btn btn--danger" style="display:none">🗑 delete selected</button>
+          </div>
+          <div id="schema-hint" class="schema-hint"></div>
+
+          <label class="gen-label" id="upload-format-label">Custom format / template for the compiled note</label>
           <textarea id="upload-format" class="gen-format"></textarea>
           <div class="gen-actions">
             <label><input type="checkbox" id="upload-save" checked /> save to vault</label>

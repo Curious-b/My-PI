@@ -12,11 +12,13 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import ingest as ingest_mod
+from . import render as render_mod
 from .config import settings
 from .graph import build_graph
 from .llm import llm_status
 from .models import GenerateIn, NoteIn, QueryIn
 from .retrieval import get_retriever
+from .schemas import InvalidSchema, SchemaStore
 from .vault import Vault, slugify
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -24,6 +26,7 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 app = FastAPI(title="My-PI — Private LLM Wiki", version="0.1.0")
 
 vault = Vault(settings.vault_dir)
+schema_store = SchemaStore(settings.schema_dir)
 
 
 def retriever():
@@ -156,14 +159,46 @@ def generate(payload: GenerateIn):
 
 
 # --------------------------------------------------------------------------
+# JSON Schema library (bring-your-own schema per document type)
+# --------------------------------------------------------------------------
+@app.get("/api/schemas")
+def list_schemas():
+    return schema_store.list()
+
+
+@app.post("/api/schemas")
+async def upload_schema(file: UploadFile = File(...)):
+    data = await file.read()
+    try:
+        return schema_store.save(file.filename or "schema", data)
+    except InvalidSchema as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.delete("/api/schemas/{name}")
+def delete_schema(name: str):
+    if not schema_store.delete(name):
+        raise HTTPException(404, f"Schema '{name}' not found")
+    return {"deleted": name}
+
+
+# --------------------------------------------------------------------------
 # Upload documents (PDF/Word/Excel/CSV/text) -> compiled Markdown notes
 # --------------------------------------------------------------------------
 @app.post("/api/ingest")
 async def ingest(
     files: list[UploadFile] = File(...),
     format_spec: str = Form(""),
+    schema_name: str = Form(""),
     save: bool = Form(False),
 ):
+    schema = None
+    if schema_name:
+        try:
+            schema = schema_store.load(schema_name)
+        except FileNotFoundError:
+            raise HTTPException(404, f"Schema '{schema_name}' not found")
+
     results = []
     for upload in files:
         data = await upload.read()
@@ -183,15 +218,32 @@ async def ingest(
             })
             continue
 
-        # 2) Compile it into a structured note via DSPy (LLM). Fall back to the
-        #    raw extracted text if the local model isn't available.
+        # 2) Turn it into a note via DSPy (LLM): either free-form (format_spec)
+        #    or, if a schema was chosen, strict JSON-schema extraction rendered
+        #    to Markdown. Fall back to raw extracted text if the LLM is offline.
+        extraction_info = None
         try:
             from . import dspy_modules
 
-            compiled = dspy_modules.compile_document(name, extracted.text, format_spec)
-            title, note_md, tags, used_llm = (
-                compiled.title, compiled.note, compiled.tags, True)
-        except Exception as exc:
+            if schema is not None:
+                extraction = dspy_modules.extract_structured(name, extracted.text, schema)
+                title_val = extraction.data.get("title") or extraction.data.get("name")
+                title = str(title_val).strip() if title_val else Path(name).stem.replace("-", " ").replace("_", " ")
+                note_md = render_mod.json_to_markdown(extraction.data, schema)
+                raw_tags = extraction.data.get("tags")
+                tags = [str(t) for t in raw_tags] if isinstance(raw_tags, list) else []
+                used_llm = True
+                extraction_info = {
+                    "schema": schema_name,
+                    "valid": not extraction.errors,
+                    "errors": extraction.errors,
+                    "data": extraction.data,
+                }
+            else:
+                compiled = dspy_modules.compile_document(name, extracted.text, format_spec)
+                title, note_md, tags, used_llm = (
+                    compiled.title, compiled.note, compiled.tags, True)
+        except Exception:
             title = Path(name).stem.replace("-", " ").replace("_", " ")
             note_md = (
                 f"> ⚠ Local LLM offline — showing raw extracted text from "
@@ -207,7 +259,7 @@ async def ingest(
             note = vault.save(title, note_md, tags)
             saved = note.slug
 
-        results.append({
+        result = {
             "filename": name,
             "kind": extracted.kind,
             "meta": extracted.meta,
@@ -217,7 +269,10 @@ async def ingest(
             "llm": used_llm,
             "chars": len(extracted.text),
             "saved": saved,
-        })
+        }
+        if extraction_info is not None:
+            result["extraction"] = extraction_info
+        results.append(result)
 
     return {"results": results}
 
