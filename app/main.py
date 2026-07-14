@@ -7,10 +7,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import ingest as ingest_mod
 from .config import settings
 from .graph import build_graph
 from .llm import llm_status
@@ -152,6 +153,73 @@ def generate(payload: GenerateIn):
         "tags": draft.tags,
         "saved": saved,
     }
+
+
+# --------------------------------------------------------------------------
+# Upload documents (PDF/Word/Excel/CSV/text) -> compiled Markdown notes
+# --------------------------------------------------------------------------
+@app.post("/api/ingest")
+async def ingest(
+    files: list[UploadFile] = File(...),
+    format_spec: str = Form(""),
+    save: bool = Form(False),
+):
+    results = []
+    for upload in files:
+        data = await upload.read()
+        name = upload.filename or "upload"
+
+        # 1) Extract text from the document.
+        try:
+            extracted = ingest_mod.extract(name, data)
+        except (ingest_mod.UnsupportedFile, ingest_mod.MissingParser) as exc:
+            results.append({"filename": name, "error": str(exc)})
+            continue
+
+        if not extracted.text.strip():
+            results.append({
+                "filename": name,
+                "error": "No extractable text found (is it a scanned/image-only PDF?).",
+            })
+            continue
+
+        # 2) Compile it into a structured note via DSPy (LLM). Fall back to the
+        #    raw extracted text if the local model isn't available.
+        try:
+            from . import dspy_modules
+
+            compiled = dspy_modules.compile_document(name, extracted.text, format_spec)
+            title, note_md, tags, used_llm = (
+                compiled.title, compiled.note, compiled.tags, True)
+        except Exception as exc:
+            title = Path(name).stem.replace("-", " ").replace("_", " ")
+            note_md = (
+                f"> ⚠ Local LLM offline — showing raw extracted text from "
+                f"`{name}` ({extracted.kind}). Start Ollama to auto-compile.\n\n"
+                + extracted.text
+            )
+            tags = []
+            used_llm = False
+
+        # 3) Optionally save straight into the vault.
+        saved = None
+        if save:
+            note = vault.save(title, note_md, tags)
+            saved = note.slug
+
+        results.append({
+            "filename": name,
+            "kind": extracted.kind,
+            "meta": extracted.meta,
+            "title": title,
+            "note": note_md,
+            "tags": tags,
+            "llm": used_llm,
+            "chars": len(extracted.text),
+            "saved": saved,
+        })
+
+    return {"results": results}
 
 
 # --------------------------------------------------------------------------

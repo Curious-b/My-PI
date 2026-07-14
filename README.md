@@ -22,6 +22,7 @@ powered by **open-source models running on your own machine** via
 | **Obsidian-style graph view** | Custom force-directed canvas graph — drag, zoom, click a node to open the note. Notes, `[[links]]`, and `#tags` all visualised. |
 | **DSPy framework** | Typed DSPy `Signature`s + `ChainOfThought` modules power both Q&A and note generation (`app/dspy_modules.py`). |
 | **Generate files in a custom format** | Give a template in the *Generate* tab; the model fills it in and (optionally) saves a new linked note. |
+| **Upload PDF / Word / Excel → Markdown** | The *Upload* tab extracts text from your documents and DSPy compiles each into a clean, structured `.md` note (long files are map-reduced). |
 | **Query the knowledge base** | Retrieval-Augmented Generation over your notes in the *Ask* tab, with cited sources. |
 | A brain that **keeps growing** | Just keep adding Markdown files — the index, search, and graph update automatically. |
 
@@ -63,6 +64,10 @@ once Ollama is available.
   notes and answers with citations.
 - **Generate** – enter a topic and a **custom template**; the model drafts a
   note in that exact format, suggests tags, and can save it straight to the vault.
+- **Upload** – drop in **PDF, Word, Excel, CSV or text** files. My-PI extracts
+  the content and DSPy compiles each into a structured Markdown note following
+  your template. Long documents are summarised chunk-by-chunk, then composed.
+  Without Ollama running you still get the raw extracted text back.
 
 ---
 
@@ -103,6 +108,7 @@ EMBEDDING_MODEL=all-MiniLM-L6-v2
 | GET | `/api/search?q=…` | retrieval only (no LLM) |
 | POST | `/api/query` | RAG question answering |
 | POST | `/api/generate` | generate a note in a custom format |
+| POST | `/api/ingest` | upload documents → compiled Markdown notes |
 | GET | `/api/status` | vault + retriever + LLM health |
 
 ---

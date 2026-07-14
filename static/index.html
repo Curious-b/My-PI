@@ -31,6 +31,7 @@
         <button class="tab" data-tab="note">Note</button>
         <button class="tab" data-tab="ask">Ask</button>
         <button class="tab" data-tab="generate">Generate</button>
+        <button class="tab" data-tab="upload">Upload</button>
       </nav>
 
       <!-- Graph view -->
@@ -80,6 +81,26 @@
           </div>
         </div>
         <div id="gen-result" class="result"></div>
+      </section>
+
+      <!-- Upload documents -> Markdown -->
+      <section id="tab-upload" class="panel">
+        <div class="gen-box">
+          <label class="gen-label">Upload documents — PDF, Word (.docx), Excel (.xlsx), CSV, or text.
+            DSPy extracts the content and compiles a clean Markdown note.</label>
+          <div id="dropzone" class="dropzone">
+            <input id="upload-files" type="file" multiple
+              accept=".pdf,.docx,.doc,.xlsx,.xlsm,.xls,.csv,.txt,.md,.markdown" />
+            <span class="dz-hint">Drop files here or click to choose</span>
+          </div>
+          <label class="gen-label">Custom format / template for the compiled note</label>
+          <textarea id="upload-format" class="gen-format"></textarea>
+          <div class="gen-actions">
+            <label><input type="checkbox" id="upload-save" checked /> save to vault</label>
+            <button id="upload-btn" class="btn btn--primary">Compile to Markdown</button>
+          </div>
+        </div>
+        <div id="upload-result" class="result"></div>
       </section>
     </main>
   </div>

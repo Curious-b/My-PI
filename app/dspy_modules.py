@@ -44,6 +44,29 @@ def _build_modules():
         note: str = dspy.OutputField(desc="The note body in Markdown, no frontmatter")
         tags: str = dspy.OutputField(desc="Comma-separated list of tags")
 
+    class SummariseChunk(dspy.Signature):
+        """Faithfully summarise one chunk of a larger document, preserving the
+        key facts, figures, names and structure. Do not add anything not in the
+        text."""
+
+        source: str = dspy.InputField(desc="The source document's filename")
+        chunk: str = dspy.InputField()
+        summary: str = dspy.OutputField(desc="A dense factual summary of the chunk")
+
+    class CompileNote(dspy.Signature):
+        """Compile the extracted contents of an uploaded document into a single,
+        clean, well-structured Markdown knowledge-base note. Follow the user's
+        `format_spec`. Derive a concise descriptive title. Preserve important
+        facts, figures and tables from the source; do not invent information.
+        Add [[wiki-links]] where natural and suggest 3-6 lowercase tags."""
+
+        source: str = dspy.InputField(desc="The source document's filename")
+        content: str = dspy.InputField(desc="Extracted text (or summaries) of the document")
+        format_spec: str = dspy.InputField(desc="The desired output template / format")
+        title: str = dspy.OutputField(desc="A concise title for the note")
+        note: str = dspy.OutputField(desc="The note body in Markdown, no frontmatter")
+        tags: str = dspy.OutputField(desc="Comma-separated list of tags")
+
     class AskWiki(dspy.Module):
         def __init__(self):
             super().__init__()
@@ -60,22 +83,30 @@ def _build_modules():
         def forward(self, topic: str, format_spec: str, context: str):
             return self.compose(topic=topic, format_spec=format_spec, context=context)
 
-    return AskWiki(), DraftNote()
+    class CompileDoc(dspy.Module):
+        def __init__(self):
+            super().__init__()
+            self.summarise = dspy.ChainOfThought(SummariseChunk)
+            self.compile = dspy.ChainOfThought(CompileNote)
+
+        def forward(self, source: str, content: str, format_spec: str):
+            return self.compile(source=source, content=content, format_spec=format_spec)
+
+    return {"ask": AskWiki(), "draft": DraftNote(), "compile": CompileDoc()}
 
 
 # Lazily-instantiated singletons.
-_ask_wiki = None
-_draft_note = None
+_modules: dict | None = None
 
 
 def _ensure_modules():
-    global _ask_wiki, _draft_note
+    global _modules
     ok, err = configure_lm()
     if not ok:
         raise RuntimeError(err)
-    if _ask_wiki is None or _draft_note is None:
-        _ask_wiki, _draft_note = _build_modules()
-    return _ask_wiki, _draft_note
+    if _modules is None:
+        _modules = _build_modules()
+    return _modules
 
 
 def _format_context(hits: list[Hit]) -> str:
@@ -95,9 +126,9 @@ class Answer:
 
 
 def ask(question: str, hits: list[Hit]) -> Answer:
-    ask_wiki, _ = _ensure_modules()
+    modules = _ensure_modules()
     context = _format_context(hits)
-    pred = ask_wiki(question=question, context=context)
+    pred = modules["ask"](question=question, context=context)
     return Answer(
         answer=pred.answer,
         reasoning=getattr(pred, "reasoning", ""),
@@ -112,9 +143,64 @@ class Draft:
 
 
 def draft_note(topic: str, format_spec: str, hits: list[Hit]) -> Draft:
-    _, draft = _ensure_modules()
+    modules = _ensure_modules()
     context = _format_context(hits)
-    pred = draft(topic=topic, format_spec=format_spec, context=context)
+    pred = modules["draft"](topic=topic, format_spec=format_spec, context=context)
     raw_tags = getattr(pred, "tags", "") or ""
     tags = [t.strip().lstrip("#") for t in raw_tags.replace("\n", ",").split(",") if t.strip()]
     return Draft(note=pred.note, tags=tags[:6])
+
+
+# --- Document compilation -------------------------------------------------
+def _chunk(text: str, size: int = 6000) -> list[str]:
+    """Split text into ~size-char chunks on paragraph boundaries."""
+    if len(text) <= size:
+        return [text]
+    chunks, current = [], []
+    length = 0
+    for para in text.split("\n"):
+        if length + len(para) > size and current:
+            chunks.append("\n".join(current))
+            current, length = [], 0
+        current.append(para)
+        length += len(para) + 1
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
+@dataclass
+class Compiled:
+    title: str
+    note: str
+    tags: list[str]
+
+
+def compile_document(source: str, text: str, format_spec: str,
+                     max_chunks: int = 8) -> Compiled:
+    """Turn extracted document text into a structured Markdown note.
+
+    For long documents this map-reduces: summarise each chunk, then compile the
+    summaries into the final note. Bounded by `max_chunks` to keep it fast on
+    CPU-only local models.
+    """
+    modules = _ensure_modules()
+    compiler = modules["compile"]
+
+    chunks = _chunk(text)
+    if len(chunks) == 1:
+        content = text
+    else:
+        summaries = []
+        for chunk in chunks[:max_chunks]:
+            pred = compiler.summarise(source=source, chunk=chunk)
+            summaries.append(pred.summary)
+        if len(chunks) > max_chunks:
+            summaries.append("[…remaining sections omitted for length…]")
+        content = "\n\n".join(summaries)
+
+    pred = compiler(source=source, content=content, format_spec=format_spec)
+    raw_tags = getattr(pred, "tags", "") or ""
+    tags = [t.strip().lstrip("#") for t in raw_tags.replace("\n", ",").split(",") if t.strip()]
+    title = (getattr(pred, "title", "") or source).strip()
+    return Compiled(title=title, note=pred.note, tags=tags[:6])

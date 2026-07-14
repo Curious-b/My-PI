@@ -17,6 +17,10 @@ const api = {
     return r.json();
   },
   async del(url) { return (await fetch(url, { method: "DELETE" })).json(); },
+  async upload(url, formData) {
+    const r = await fetch(url, { method: "POST", body: formData });
+    return r.json();
+  },
 };
 
 let currentSlug = null;
@@ -226,6 +230,65 @@ $("#gen-btn").addEventListener("click", async () => {
   }
   box.innerHTML = html;
 });
+
+/* ---------------- Upload documents -> Markdown ---------------- */
+$("#upload-format").value = DEFAULT_FORMAT;
+
+const dropzone = $("#dropzone");
+const uploadInput = $("#upload-files");
+["dragover", "dragenter"].forEach((ev) =>
+  dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.add("drag"); }));
+["dragleave", "drop"].forEach((ev) =>
+  dropzone.addEventListener(ev, () => dropzone.classList.remove("drag")));
+dropzone.addEventListener("drop", (e) => {
+  e.preventDefault();
+  if (e.dataTransfer.files.length) uploadInput.files = e.dataTransfer.files;
+  updateDzHint();
+});
+uploadInput.addEventListener("change", updateDzHint);
+function updateDzHint() {
+  const n = uploadInput.files.length;
+  dropzone.querySelector(".dz-hint").textContent =
+    n ? `${n} file${n > 1 ? "s" : ""} selected` : "Drop files here or click to choose";
+}
+
+$("#upload-btn").addEventListener("click", async () => {
+  const files = uploadInput.files;
+  if (!files.length) { alert("Choose one or more files first."); return; }
+  const box = $("#upload-result");
+  box.innerHTML = `<div class="spinner">Extracting & compiling ${files.length} file(s) with DSPy… (large PDFs take a while)</div>`;
+
+  const fd = new FormData();
+  for (const f of files) fd.append("files", f);
+  fd.append("format_spec", $("#upload-format").value);
+  fd.append("save", $("#upload-save").checked ? "true" : "false");
+
+  let data;
+  try { data = await api.upload("/api/ingest", fd); }
+  catch (err) { box.innerHTML = `<div class="warn">Upload failed: ${escapeHtml(String(err))}</div>`; return; }
+
+  box.innerHTML = (data.results || []).map(renderIngestResult).join("");
+  box.querySelectorAll(".chip").forEach((c) =>
+    c.addEventListener("click", () => openNote(c.dataset.slug)));
+  await loadNotes();
+  graph.reload();
+});
+
+function renderIngestResult(r) {
+  if (r.error) {
+    return `<div class="ingest-card"><strong>${escapeHtml(r.filename)}</strong>
+      <div class="warn">⚠ ${escapeHtml(r.error)}</div></div>`;
+  }
+  let html = `<div class="ingest-card">
+    <div class="ingest-head"><strong>${escapeHtml(r.title)}</strong>
+      <span class="meta">${r.kind} · ${r.chars} chars${r.llm ? "" : " · raw (LLM offline)"}</span></div>`;
+  if (r.tags && r.tags.length)
+    html += `<div>${r.tags.map((t) => `<span class="tag-pill">#${t}</span>`).join("")}</div>`;
+  html += `<div class="answer">${escapeHtml(r.note)}</div>`;
+  if (r.saved)
+    html += `<p class="msg">Saved as <span class="chip" data-slug="${r.saved}">${r.saved}</span> ✓</p>`;
+  return html + `</div>`;
+}
 
 /* =====================================================================
    Force-directed graph (canvas, no libraries)

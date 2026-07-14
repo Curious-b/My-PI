@@ -17,3 +17,10 @@ sentence-transformers>=2.7.0
 # ---- Markdown / frontmatter parsing ----
 python-frontmatter>=1.1.0
 markdown>=3.6
+
+# ---- Document ingestion (PDF / Word / Excel) ----
+# Each is an optional import: if one is missing, only that file type is
+# disabled and the app tells you which package to install.
+pypdf>=4.2.0
+python-docx>=1.1.0
+openpyxl>=3.1.0
