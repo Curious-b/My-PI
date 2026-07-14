@@ -10,6 +10,7 @@ search index and graph all work even before you install Ollama/DSPy.
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -145,7 +146,26 @@ class Vault:
 
     def delete(self, slug: str) -> bool:
         path = self.path_for(slug)
+        data_path = self.data_path_for(slug)
+        if data_path.exists():
+            data_path.unlink()
         if path.exists():
             path.unlink()
             return True
         return False
+
+    # -- companion structured-data (from schema-based extraction) -----------
+    def data_path_for(self, slug: str) -> Path:
+        return self.root / f"{slug}.json"
+
+    def save_data(self, slug: str, payload: dict) -> None:
+        """Persist the JSON extracted for a note alongside its Markdown file."""
+        self.data_path_for(slug).write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+    def get_data(self, slug: str) -> dict | None:
+        path = self.data_path_for(slug)
+        if not path.exists():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))

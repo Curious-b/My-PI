@@ -70,6 +70,16 @@ def delete_note(slug: str):
     return {"deleted": slug}
 
 
+@app.get("/api/notes/{slug}/data")
+def get_note_data(slug: str):
+    """The structured JSON that was extracted for this note, if it was
+    created via schema-based extraction (see /api/ingest)."""
+    payload = vault.get_data(slug)
+    if payload is None:
+        raise HTTPException(404, f"No extracted JSON for '{slug}'")
+    return payload
+
+
 # --------------------------------------------------------------------------
 # Graph
 # --------------------------------------------------------------------------
@@ -175,6 +185,14 @@ async def upload_schema(file: UploadFile = File(...)):
         raise HTTPException(400, str(exc))
 
 
+@app.get("/api/schemas/{name}")
+def get_schema(name: str):
+    try:
+        return schema_store.load(name)
+    except FileNotFoundError:
+        raise HTTPException(404, f"Schema '{name}' not found")
+
+
 @app.delete("/api/schemas/{name}")
 def delete_schema(name: str):
     if not schema_store.delete(name):
@@ -253,11 +271,21 @@ async def ingest(
             tags = []
             used_llm = False
 
-        # 3) Optionally save straight into the vault.
+        # 3) Optionally save straight into the vault. When the note came from
+        #    schema-based extraction, persist the validated JSON alongside it
+        #    so it can be viewed later (see GET /api/notes/{slug}/data).
         saved = None
         if save:
             note = vault.save(title, note_md, tags)
             saved = note.slug
+            if extraction_info is not None:
+                vault.save_data(note.slug, {
+                    "schema": schema_name,
+                    "source_filename": name,
+                    "valid": extraction_info["valid"],
+                    "errors": extraction_info["errors"],
+                    "data": extraction_info["data"],
+                })
 
         result = {
             "filename": name,

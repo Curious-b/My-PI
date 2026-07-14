@@ -87,6 +87,13 @@ once Ollama is available.
   privacy model as the vault) — nothing is invented on your behalf; the
   fields extracted are exactly the ones you defined.
 
+  **See the JSON, not just the rendered note.** Click "👁 view schema" next
+  to the dropdown to see the full schema you uploaded. After a schema-based
+  upload is saved, its exact validated JSON is saved too — alongside the
+  note as `<slug>.json` in your vault — and appears in a "📄 extracted JSON"
+  panel whenever you reopen that note (also right in the Upload tab's
+  result card, immediately after ingesting).
+
 ---
 
 ## 🧩 Architecture
@@ -128,8 +135,10 @@ EMBEDDING_MODEL=all-MiniLM-L6-v2
 | POST | `/api/generate` | generate a note in a custom format |
 | POST | `/api/ingest` | upload documents → compiled Markdown notes (optionally `schema_name` for structured extraction) |
 | GET | `/api/schemas` | list uploaded JSON Schema templates |
+| GET | `/api/schemas/{name}` | view the full content of one schema |
 | POST | `/api/schemas` | upload a JSON Schema file |
 | DELETE | `/api/schemas/{name}` | remove a JSON Schema template |
+| GET | `/api/notes/{slug}/data` | the validated JSON extracted for a note (if created via a schema) |
 | GET | `/api/status` | vault + retriever + LLM health |
 
 ---

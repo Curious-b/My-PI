@@ -57,6 +57,7 @@
             <span id="note-msg" class="msg"></span>
           </div>
         </div>
+        <div id="note-data" class="note-data"></div>
         <div id="note-preview" class="note-preview"></div>
       </section>
 
@@ -102,9 +103,11 @@
             <label class="btn schema-upload-btn">+ Upload schema
               <input id="schema-file" type="file" accept=".json" hidden />
             </label>
+            <button id="schema-view-btn" class="btn" style="display:none">👁 view schema</button>
             <button id="schema-delete-btn" class="btn btn--danger" style="display:none">🗑 delete selected</button>
           </div>
           <div id="schema-hint" class="schema-hint"></div>
+          <pre id="schema-view" class="json-view" style="display:none"></pre>
 
           <label class="gen-label" id="upload-format-label">Custom format / template for the compiled note</label>
           <textarea id="upload-format" class="gen-format"></textarea>

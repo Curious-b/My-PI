@@ -65,3 +65,26 @@ def test_delete(tmp_path):
     assert v.delete("Gamma") is True
     assert v.get("Gamma") is None
     assert v.delete("Gamma") is False
+
+
+def test_companion_data_roundtrip(tmp_path):
+    v = make_vault(tmp_path)
+    assert v.get_data("Alpha") is None  # nothing saved yet
+
+    payload = {"schema": "district", "data": {"district": "Mysuru"}}
+    v.save_data("Alpha", payload)
+    assert v.get_data("Alpha") == payload
+
+    # Overwriting replaces, not merges.
+    v.save_data("Alpha", {"data": {"district": "Bengaluru"}})
+    assert v.get_data("Alpha") == {"data": {"district": "Bengaluru"}}
+
+
+def test_delete_note_removes_companion_data(tmp_path):
+    v = make_vault(tmp_path)
+    v.save_data("Alpha", {"data": {"x": 1}})
+    assert v.data_path_for("Alpha").exists()
+
+    v.delete("Alpha")
+    assert v.get_data("Alpha") is None
+    assert not v.data_path_for("Alpha").exists()

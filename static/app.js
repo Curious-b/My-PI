@@ -81,6 +81,7 @@ async function openNote(slug) {
   $("#note-tags").value = note.tags.join(", ");
   $("#note-body").value = note.body;
   renderPreview(note.body);
+  await loadNoteData(slug);
   switchTab("note");
   loadNotes($("#search").value);
 }
@@ -91,7 +92,22 @@ function newNote() {
   $("#note-tags").value = "";
   $("#note-body").value = "";
   $("#note-preview").innerHTML = "";
+  $("#note-data").innerHTML = "";
   switchTab("note");
+}
+
+/* Show the companion extracted-JSON file for a note, if one was saved
+   during schema-based Upload (see /api/notes/{slug}/data). */
+async function loadNoteData(slug) {
+  const box = $("#note-data");
+  box.innerHTML = "";
+  const res = await fetch("/api/notes/" + slug + "/data");
+  if (!res.ok) return; // 404 -> this note has no extracted JSON, nothing to show
+  const payload = await res.json();
+  box.innerHTML = `<details><summary class="reasoning">📄 extracted JSON`
+    + (payload.schema ? ` — schema: ${escapeHtml(payload.schema)}` : "")
+    + (payload.valid === false ? ` <span class="warn" style="display:inline">⚠ ${payload.errors.length} issue(s)</span>` : "")
+    + `</summary><pre class="json-view">${escapeHtml(JSON.stringify(payload.data, null, 2))}</pre></details>`;
 }
 $("#new-note").addEventListener("click", newNote);
 
@@ -276,20 +292,43 @@ function updateSchemaHint() {
   const formatBox = $("#upload-format");
   const formatLabel = $("#upload-format-label");
   const delBtn = $("#schema-delete-btn");
+  const viewBtn = $("#schema-view-btn");
+  const viewPre = $("#schema-view");
+  // Selection changed: collapse any previously-shown schema JSON.
+  viewPre.style.display = "none";
+  viewBtn.textContent = "👁 view schema";
   if (sel.value) {
     hint.textContent = opt.dataset.fields
       ? `Fields: ${opt.dataset.fields}` : (opt.dataset.description || "");
     formatBox.disabled = true;
     formatLabel.textContent = "Custom format / template (ignored — a schema is selected)";
     delBtn.style.display = "";
+    viewBtn.style.display = "";
   } else {
     hint.textContent = "";
     formatBox.disabled = false;
     formatLabel.textContent = "Custom format / template for the compiled note";
     delBtn.style.display = "none";
+    viewBtn.style.display = "none";
   }
 }
 $("#schema-select").addEventListener("change", updateSchemaHint);
+
+$("#schema-view-btn").addEventListener("click", async () => {
+  const pre = $("#schema-view");
+  const btn = $("#schema-view-btn");
+  const name = $("#schema-select").value;
+  if (!name) return;
+  if (pre.style.display === "none") {
+    const schema = await api.get("/api/schemas/" + name);
+    pre.textContent = JSON.stringify(schema, null, 2);
+    pre.style.display = "block";
+    btn.textContent = "🙈 hide schema";
+  } else {
+    pre.style.display = "none";
+    btn.textContent = "👁 view schema";
+  }
+});
 
 $("#schema-file").addEventListener("change", async () => {
   const file = $("#schema-file").files[0];
@@ -355,10 +394,13 @@ function renderIngestResult(r) {
   html += `<div class="answer">${escapeHtml(r.note)}</div>`;
   if (r.extraction) {
     html += `<details><summary class="reasoning">raw extracted JSON</summary>
-      <div class="reasoning"><pre>${escapeHtml(JSON.stringify(r.extraction.data, null, 2))}</pre></div></details>`;
+      <pre class="json-view">${escapeHtml(JSON.stringify(r.extraction.data, null, 2))}</pre></details>`;
   }
-  if (r.saved)
-    html += `<p class="msg">Saved as <span class="chip" data-slug="${r.saved}">${r.saved}</span> ✓</p>`;
+  if (r.saved) {
+    html += `<p class="msg">Saved as <span class="chip" data-slug="${r.saved}">${r.saved}</span> ✓`
+      + (r.extraction ? ` — its extracted JSON is saved too; open the note to view it.` : "")
+      + `</p>`;
+  }
   return html + `</div>`;
 }
 
