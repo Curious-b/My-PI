@@ -37,5 +37,12 @@ class Settings:
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
     chroma_dir: Path = PROJECT_ROOT / os.getenv("CHROMA_DIR", ".chroma")
 
+    # Document-upload map-reduce tuning: fewer/larger chunks means fewer LLM
+    # round-trips (faster) at the cost of each call needing more of your
+    # model's context window. Defaults are conservative; raise chunk_size if
+    # your model/hardware can handle it (see README "Making extraction faster").
+    chunk_size: int = int(os.getenv("CHUNK_SIZE", "6000"))
+    max_chunks: int = int(os.getenv("MAX_CHUNKS", "8"))
+
 
 settings = Settings()

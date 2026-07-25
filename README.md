@@ -148,6 +148,36 @@ EMBEDDING_MODEL=all-MiniLM-L6-v2
 
 ---
 
+## ⚡ Making extraction faster
+Uploading a large PDF runs several sequential local-model calls (summarise
+each chunk, then compose/extract), which is inherently slower than a cloud
+API — you're trading speed for privacy and cost. If it feels too slow:
+
+1. **Use a smaller model.** This is the single biggest lever. An 8B model
+   like `llama3.1` on a CPU-only machine can be genuinely slow. Try:
+   ```bash
+   ollama pull qwen2.5:3b     # or: llama3.2:3b, phi3:mini
+   ```
+   then set `LLM_MODEL=ollama_chat/qwen2.5:3b` in `.env` and restart. Smaller
+   models are often 3–10x faster with little quality loss for extraction.
+2. **Check you're not silently running on CPU** if you have a GPU — Ollama
+   uses it automatically when available; `ollama ps` shows whether a model
+   is running on GPU or CPU.
+3. **Tune `CHUNK_SIZE`/`MAX_CHUNKS` in `.env`** (see `.env.example`). Fewer,
+   larger chunks means fewer round-trips, but each call needs more of your
+   model's context window — raise `CHUNK_SIZE` only if you know your model
+   supports it, otherwise output can get silently truncated.
+4. The per-chunk summarisation and JSON-repair steps already use
+   `dspy.Predict` rather than `dspy.ChainOfThought` — no reasoning pass, so
+   fewer tokens generated per call. This is built in, nothing to configure.
+
+With the live progress cards (Upload tab), you can also now see *which*
+step is slow — if it's stuck on "Summarizing chunk 1/8…", that's model
+generation speed; if every step flashes by until "Composing," the document
+was fast to read and the final compose call is the bottleneck.
+
+---
+
 ## 🧪 Tests
 The dependency-free core (vault parsing, graph building, keyword search) is
 covered by `tests/test_core.py`:

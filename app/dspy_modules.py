@@ -120,7 +120,11 @@ def _build_modules():
     class CompileDoc(dspy.Module):
         def __init__(self):
             super().__init__()
-            self.summarise = dspy.ChainOfThought(SummariseChunk)
+            # Predict (not ChainOfThought) for the per-chunk pass: it's a
+            # mechanical extractive summary, run up to max_chunks times per
+            # document, and skipping the reasoning step cuts generated
+            # tokens (and wall time) substantially with no quality loss here.
+            self.summarise = dspy.Predict(SummariseChunk)
             self.compile = dspy.ChainOfThought(CompileNote)
 
         def forward(self, source: str, content: str, format_spec: str):
@@ -129,9 +133,12 @@ def _build_modules():
     class ExtractDoc(dspy.Module):
         def __init__(self):
             super().__init__()
-            self.summarise = dspy.ChainOfThought(SummariseChunk)
+            self.summarise = dspy.Predict(SummariseChunk)
             self.extract = dspy.ChainOfThought(ExtractFields)
-            self.repair = dspy.ChainOfThought(RepairFields)
+            # Repair is a mechanical "fix this JSON" task, not something
+            # that benefits from a reasoning pass — Predict is faster and
+            # just as reliable for it.
+            self.repair = dspy.Predict(RepairFields)
 
         def forward(self, source: str, content: str, schema_json: str):
             return self.extract(source=source, content=content, schema_json=schema_json)
@@ -224,19 +231,21 @@ class Compiled:
 
 
 def compile_document(source: str, text: str, format_spec: str,
-                     max_chunks: int = 8, on_progress: ProgressFn | None = None) -> Compiled:
+                     max_chunks: int = 8, chunk_size: int = 6000,
+                     on_progress: ProgressFn | None = None) -> Compiled:
     """Turn extracted document text into a structured Markdown note.
 
     For long documents this map-reduces: summarise each chunk, then compile the
     summaries into the final note. Bounded by `max_chunks` to keep it fast on
-    CPU-only local models. `on_progress`, if given, is called with a dict
+    CPU-only local models — fewer/larger chunks (bigger `chunk_size`) means
+    fewer LLM round-trips. `on_progress`, if given, is called with a dict
     describing each step (chunking, per-chunk summarising, composing) so a
     caller can surface live progress for slow local-model runs.
     """
     modules = _ensure_modules()
     compiler = modules["compile"]
 
-    chunks = _chunk(text)
+    chunks = _chunk(text, size=chunk_size)
     _emit(on_progress, "chunked", total_chunks=len(chunks))
     if len(chunks) == 1:
         content = text
@@ -304,7 +313,7 @@ class Extraction:
 
 
 def extract_structured(source: str, text: str, schema: dict, max_chunks: int = 8,
-                        on_progress: ProgressFn | None = None) -> Extraction:
+                        chunk_size: int = 6000, on_progress: ProgressFn | None = None) -> Extraction:
     """Extract JSON matching `schema` from a document's text via DSPy.
 
     Long documents are summarised chunk-by-chunk first (like compile_document)
@@ -317,7 +326,7 @@ def extract_structured(source: str, text: str, schema: dict, max_chunks: int = 8
     modules = _ensure_modules()
     extractor = modules["extract"]
 
-    chunks = _chunk(text)
+    chunks = _chunk(text, size=chunk_size)
     _emit(on_progress, "chunked", total_chunks=len(chunks))
     if len(chunks) == 1:
         content = text

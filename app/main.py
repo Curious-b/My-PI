@@ -246,7 +246,8 @@ def _process_file(
 
         if schema is not None:
             extraction = dspy_modules.extract_structured(
-                name, extracted.text, schema, on_progress=on_progress)
+                name, extracted.text, schema, max_chunks=settings.max_chunks,
+                chunk_size=settings.chunk_size, on_progress=on_progress)
             title_val = extraction.data.get("title") or extraction.data.get("name")
             title = str(title_val).strip() if title_val else Path(name).stem.replace("-", " ").replace("_", " ")
             note_md = render_mod.json_to_markdown(extraction.data, schema)
@@ -261,7 +262,8 @@ def _process_file(
             }
         else:
             compiled = dspy_modules.compile_document(
-                name, extracted.text, format_spec, on_progress=on_progress)
+                name, extracted.text, format_spec, max_chunks=settings.max_chunks,
+                chunk_size=settings.chunk_size, on_progress=on_progress)
             title, note_md, tags, used_llm = (
                 compiled.title, compiled.note, compiled.tags, True)
     except Exception:

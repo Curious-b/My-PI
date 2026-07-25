@@ -59,7 +59,7 @@ def test_ingest_with_schema_persists_companion_json(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         dm, "extract_structured",
-        lambda source, text, schema, max_chunks=8, on_progress=None: dm.Extraction(
+        lambda source, text, schema, max_chunks=8, chunk_size=6000, on_progress=None: dm.Extraction(
             data={"district": "Mysuru", "population": 3001000}, errors=[], raw="{}"
         ),
     )
@@ -90,7 +90,7 @@ def test_ingest_without_save_does_not_persist_data(tmp_path, monkeypatch):
     c.post("/api/schemas", files={"file": ("district.json", SCHEMA, "application/json")})
     monkeypatch.setattr(
         dm, "extract_structured",
-        lambda source, text, schema, max_chunks=8, on_progress=None: dm.Extraction(
+        lambda source, text, schema, max_chunks=8, chunk_size=6000, on_progress=None: dm.Extraction(
             data={"district": "Mysuru"}, errors=[], raw="{}"
         ),
     )
@@ -115,7 +115,7 @@ def _read_ndjson(response) -> list[dict]:
 def test_ingest_stream_reports_progress_events(tmp_path, monkeypatch):
     c = make_client(tmp_path)
 
-    def fake_compile(source, text, format_spec, max_chunks=8, on_progress=None):
+    def fake_compile(source, text, format_spec, max_chunks=8, chunk_size=6000, on_progress=None):
         if on_progress:
             on_progress({"step": "chunked", "total_chunks": 2})
             on_progress({"step": "summarizing", "index": 1, "total": 2})
