@@ -24,6 +24,22 @@ def _label(key: str, props: dict) -> str:
     return prop.get("title") or humanize(key)
 
 
+def _ordered_items(data: dict, schema: dict | None):
+    """Yield (key, value) pairs in the schema's declared property order, so
+    Markdown sections come out in a stable, predictable order that matches
+    the schema rather than however the LLM happened to emit the JSON keys.
+    Any keys present in `data` but not declared in the schema are appended
+    at the end, in their original order, so nothing is silently dropped.
+    """
+    props = (schema or {}).get("properties", {})
+    for key in props:
+        if key in data:
+            yield key, data[key]
+    for key, value in data.items():
+        if key not in props:
+            yield key, value
+
+
 def _table(rows: list[dict]) -> str:
     columns: list[str] = []
     for row in rows:
@@ -40,31 +56,37 @@ def _table(rows: list[dict]) -> str:
 
 
 def json_to_markdown(data: dict, schema: dict | None = None, level: int = 2) -> str:
-    """Recursively render a dict (already validated against `schema`) as Markdown."""
+    """Render a dict (already validated against `schema`) as Markdown with one
+    clearly defined section per field, ordered and labeled per the schema.
+
+    Every field — scalar, nested object, or list — becomes its own heading,
+    so the resulting document's structure visibly mirrors the schema rather
+    than compressing simple fields into inline bold text. Nested objects
+    recurse into deeper headings; lists of objects become tables; lists of
+    scalars become bullets.
+    """
     props = (schema or {}).get("properties", {})
     heading = "#" * min(level, 6)
     lines: list[str] = []
 
-    for key, value in data.items():
+    for key, value in _ordered_items(data, schema):
         label = _label(key, props)
         sub_schema = props.get(key)
+        lines.append(f"{heading} {label}")
 
         if isinstance(value, dict):
-            lines.append(f"{heading} {label}")
             lines.append(json_to_markdown(value, sub_schema, level + 1))
         elif isinstance(value, list):
             if not value:
-                lines.append(f"**{label}:** _none_")
+                lines.append("_none_")
             elif all(isinstance(v, dict) for v in value):
-                lines.append(f"{heading} {label}")
                 lines.append(_table(value))
             else:
-                lines.append(f"{heading} {label}")
                 lines.extend(f"- {v}" for v in value)
         elif value is None or value == "":
-            lines.append(f"**{label}:** _not found_")
+            lines.append("_not found_")
         else:
-            lines.append(f"**{label}:** {value}")
+            lines.append(str(value))
         lines.append("")
 
     return "\n".join(lines).strip() + "\n"

@@ -53,7 +53,9 @@ def test_note_data_404_when_absent(tmp_path):
     assert c.get("/api/notes/Plain-Note/data").status_code == 404
 
 
-def test_ingest_with_schema_persists_companion_json(tmp_path, monkeypatch):
+def test_ingest_with_schema_returns_extraction_only_no_note_yet(tmp_path, monkeypatch):
+    """With a schema selected, /api/ingest should stop at extraction — no
+    Markdown, no save. Converting/saving is the separate /api/render step."""
     c = make_client(tmp_path)
     c.post("/api/schemas", files={"file": ("district.json", SCHEMA, "application/json")})
 
@@ -70,7 +72,36 @@ def test_ingest_with_schema_persists_companion_json(tmp_path, monkeypatch):
         data={"format_spec": "", "schema_name": "district", "save": "true"},
     )
     result = r.json()["results"][0]
-    slug = result["saved"]
+    assert "note" not in result
+    assert "saved" not in result
+    assert result["extraction"]["schema"] == "district"
+    assert result["extraction"]["valid"] is True
+    assert result["extraction"]["data"] == {"district": "Mysuru", "population": 3001000}
+
+    # Nothing should have been written to the vault at this stage.
+    assert list((tmp_path / "vault").glob("*.md")) == []
+    assert list((tmp_path / "vault").glob("*.json")) == []
+
+
+def test_render_converts_extraction_to_markdown_and_saves(tmp_path):
+    c = make_client(tmp_path)
+    c.post("/api/schemas", files={"file": ("district.json", SCHEMA, "application/json")})
+
+    r = c.post("/api/render", json={
+        "data": {"district": "Mysuru", "population": 3001000},
+        "schema_name": "district",
+        "source_filename": "memo.txt",
+        "save": True,
+    })
+    assert r.status_code == 200
+    body = r.json()
+    # No "title"/"name" field in the data, so the title falls back to the
+    # source filename.
+    assert body["title"] == "memo"
+    assert "## District" in body["note"]
+    assert "Mysuru" in body["note"]
+    assert body["valid"] is True
+    slug = body["saved"]
     assert slug
 
     data_res = c.get(f"/api/notes/{slug}/data")
@@ -85,25 +116,46 @@ def test_ingest_with_schema_persists_companion_json(tmp_path, monkeypatch):
     assert c.get(f"/api/notes/{slug}/data").status_code == 404
 
 
-def test_ingest_without_save_does_not_persist_data(tmp_path, monkeypatch):
+def test_render_without_save_does_not_persist(tmp_path):
     c = make_client(tmp_path)
     c.post("/api/schemas", files={"file": ("district.json", SCHEMA, "application/json")})
-    monkeypatch.setattr(
-        dm, "extract_structured",
-        lambda source, text, schema, max_chunks=8, chunk_size=6000, on_progress=None: dm.Extraction(
-            data={"district": "Mysuru"}, errors=[], raw="{}"
-        ),
-    )
-    r = c.post(
-        "/api/ingest",
-        files=[("files", ("memo.txt", b"District: Mysuru.", "text/plain"))],
-        data={"format_spec": "", "schema_name": "district", "save": "false"},
-    )
-    result = r.json()["results"][0]
-    assert result["saved"] is None
-    # Nothing was saved, so there is no slug to have data under, and no
-    # stray file should have been written anywhere in the temp vault.
+
+    r = c.post("/api/render", json={
+        "data": {"district": "Mysuru"},
+        "schema_name": "district",
+        "source_filename": "memo.txt",
+        "save": False,
+    })
+    body = r.json()
+    assert body["saved"] is None
+    assert list((tmp_path / "vault").glob("*.md")) == []
     assert list((tmp_path / "vault").glob("*.json")) == []
+
+
+def test_render_reports_validation_errors_without_blocking(tmp_path):
+    c = make_client(tmp_path)
+    c.post("/api/schemas", files={"file": ("district.json", SCHEMA, "application/json")})
+
+    # Missing the required "district" field.
+    r = c.post("/api/render", json={
+        "data": {"population": 100},
+        "schema_name": "district",
+        "source_filename": "memo.txt",
+        "save": False,
+    })
+    body = r.json()
+    assert body["valid"] is False
+    assert body["errors"]
+    # Still renders something useful even though it's invalid.
+    assert "## Population" in body["note"]
+
+
+def test_render_unknown_schema_404s(tmp_path):
+    c = make_client(tmp_path)
+    r = c.post("/api/render", json={
+        "data": {"a": 1}, "schema_name": "does-not-exist", "save": False,
+    })
+    assert r.status_code == 404
 
 
 def _read_ndjson(response) -> list[dict]:

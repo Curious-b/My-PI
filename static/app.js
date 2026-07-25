@@ -290,6 +290,9 @@ function updateSchemaHint() {
   const delBtn = $("#schema-delete-btn");
   const viewBtn = $("#schema-view-btn");
   const viewPre = $("#schema-view");
+  const saveRow = $("#upload-save-row");
+  const schemaModeHint = $("#schema-mode-hint");
+  const uploadBtn = $("#upload-btn");
   // Selection changed: collapse any previously-shown schema JSON.
   viewPre.style.display = "none";
   viewBtn.textContent = "👁 view schema";
@@ -300,12 +303,21 @@ function updateSchemaHint() {
     formatLabel.textContent = "Custom format / template (ignored — a schema is selected)";
     delBtn.style.display = "";
     viewBtn.style.display = "";
+    // Schema mode is a two-step flow: extract JSON here, convert to
+    // Markdown as a separate explicit action per result, so "save to
+    // vault" doesn't apply to this step.
+    saveRow.style.display = "none";
+    schemaModeHint.style.display = "";
+    uploadBtn.textContent = "Extract JSON";
   } else {
     hint.textContent = "";
     formatBox.disabled = false;
     formatLabel.textContent = "Custom format / template for the compiled note";
     delBtn.style.display = "none";
     viewBtn.style.display = "none";
+    saveRow.style.display = "";
+    schemaModeHint.style.display = "none";
+    uploadBtn.textContent = "Compile to Markdown";
   }
 }
 $("#schema-select").addEventListener("change", updateSchemaHint);
@@ -366,11 +378,42 @@ function stepLabel(evt) {
   return fn ? fn(evt) : evt.step;
 }
 
+function downloadBlob(filename, content, mime) {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function postJSON(url, payload) {
+  const r = await fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const body = await r.json();
+  if (!r.ok) throw new Error(body.detail || `Request failed (${r.status})`);
+  return body;
+}
+
+// Per-upload-run scratch data, keyed by the file's index. resultStore holds
+// each file's /api/ingest(/stream) result; convertedStore holds the
+// Markdown produced once "Convert to Markdown" is clicked (schema mode
+// only — free-text mode already has its note in resultStore).
+let resultStore = {};
+let convertedStore = {};
+
 $("#upload-btn").addEventListener("click", async () => {
   const files = Array.from(uploadInput.files);
   if (!files.length) { alert("Choose one or more files first."); return; }
   const schemaName = $("#schema-select").value;
   const box = $("#upload-result");
+  resultStore = {};
+  convertedStore = {};
 
   // One live-progress card per file, in upload order.
   box.innerHTML = files.map((f, i) => `
@@ -431,46 +474,134 @@ function handleIngestEvent(evt, nameToIndex) {
     card.querySelector(".meta").textContent = "working…";
     card.querySelector(".progress-step").textContent = stepLabel(evt);
   } else if (evt.event === "file_done") {
-    // renderIngestResult() itself handles both success and { error } shapes.
+    resultStore[idx] = evt.result;
     const wrapper = document.createElement("div");
-    wrapper.innerHTML = renderIngestResult(evt.result);
+    wrapper.innerHTML = renderIngestResult(evt.result, idx);
     const newCard = wrapper.firstElementChild;
     newCard.id = `ingest-card-${idx}`;
     card.replaceWith(newCard);
-    newCard.querySelectorAll(".chip").forEach((c) =>
-      c.addEventListener("click", () => openNote(c.dataset.slug)));
   }
 }
 
-function renderIngestResult(r) {
+function renderIngestResult(r, idx) {
   if (r.error) {
     return `<div class="ingest-card"><strong>${escapeHtml(r.filename)}</strong>
       <div class="warn">⚠ ${escapeHtml(r.error)}</div></div>`;
   }
+
+  if (r.extraction && !("note" in r)) {
+    // Schema mode: extraction stops here. Converting to Markdown is a
+    // separate, explicit step (see the "Convert to Markdown" button) —
+    // this card offers the raw JSON to inspect/download first.
+    const ex = r.extraction;
+    return `<div class="ingest-card">
+      <div class="ingest-head"><strong>${escapeHtml(r.filename)}</strong>
+        <span class="meta">${r.kind} · ${r.chars} chars · schema: ${escapeHtml(ex.schema)}</span></div>
+      <div class="meta">${ex.valid
+        ? `<span style="color:var(--green)">validated ✓</span>`
+        : `<span class="warn" style="display:inline">⚠ ${ex.errors.length} field issue(s): ${escapeHtml(ex.errors.join("; "))}</span>`}</div>
+      <details open><summary class="reasoning">extracted JSON</summary>
+        <pre class="json-view">${escapeHtml(JSON.stringify(ex.data, null, 2))}</pre></details>
+      <div class="gen-actions">
+        <button class="btn download-json-btn" data-idx="${idx}">⬇ Download JSON</button>
+        <button class="btn btn--primary convert-btn" data-idx="${idx}">📝 Convert to Markdown</button>
+      </div>
+      <div class="convert-result" id="convert-result-${idx}"></div>
+    </div>`;
+  }
+
+  // Free-text / template mode: Markdown was already generated in one step.
   let html = `<div class="ingest-card">
     <div class="ingest-head"><strong>${escapeHtml(r.title)}</strong>
       <span class="meta">${r.kind} · ${r.chars} chars${r.llm ? "" : " · raw (LLM offline)"}</span></div>`;
-  if (r.extraction) {
-    html += `<div class="meta">schema: ${escapeHtml(r.extraction.schema)} · `
-      + (r.extraction.valid
-        ? `<span style="color:var(--green)">validated ✓</span>`
-        : `<span class="warn" style="display:inline">⚠ ${r.extraction.errors.length} field issue(s): ${escapeHtml(r.extraction.errors.join("; "))}</span>`)
-      + `</div>`;
-  }
   if (r.tags && r.tags.length)
     html += `<div>${r.tags.map((t) => `<span class="tag-pill">#${t}</span>`).join("")}</div>`;
   html += `<div class="answer">${escapeHtml(r.note)}</div>`;
-  if (r.extraction) {
-    html += `<details><summary class="reasoning">raw extracted JSON</summary>
-      <pre class="json-view">${escapeHtml(JSON.stringify(r.extraction.data, null, 2))}</pre></details>`;
-  }
-  if (r.saved) {
-    html += `<p class="msg">Saved as <span class="chip" data-slug="${r.saved}">${r.saved}</span> ✓`
-      + (r.extraction ? ` — its extracted JSON is saved too; open the note to view it.` : "")
-      + `</p>`;
-  }
+  html += `<div class="gen-actions"><button class="btn download-md-btn" data-idx="${idx}">⬇ Download Markdown</button></div>`;
+  if (r.saved)
+    html += `<p class="msg">Saved as <span class="chip" data-slug="${r.saved}">${r.saved}</span> ✓</p>`;
   return html + `</div>`;
 }
+
+function renderConvertedNote(res, idx) {
+  let html = `<div class="ingest-head"><strong>${escapeHtml(res.title)}</strong>
+      <span class="meta">${res.valid ? "validated ✓" : `⚠ ${res.errors.length} issue(s)`}</span></div>`;
+  if (res.tags && res.tags.length)
+    html += `<div>${res.tags.map((t) => `<span class="tag-pill">#${t}</span>`).join("")}</div>`;
+  html += `<div class="answer">${escapeHtml(res.note)}</div>`;
+  html += `<div class="gen-actions">
+      <button class="btn download-md-btn" data-idx="${idx}">⬇ Download Markdown</button>
+      <button class="btn btn--primary save-converted-btn" data-idx="${idx}">💾 Save to vault</button>
+    </div>`;
+  if (res.saved)
+    html += `<p class="msg">Saved as <span class="chip" data-slug="${res.saved}">${res.saved}</span> ✓</p>`;
+  return html;
+}
+
+async function convertToMarkdown(idx) {
+  const r = resultStore[idx];
+  const box = document.getElementById(`convert-result-${idx}`);
+  box.innerHTML = `<div class="spinner">Converting to Markdown…</div>`;
+  try {
+    const res = await postJSON("/api/render", {
+      data: r.extraction.data,
+      schema_name: r.extraction.schema,
+      source_filename: r.filename,
+      save: false,
+    });
+    convertedStore[idx] = { ...res, schemaName: r.extraction.schema, sourceFilename: r.filename };
+    box.innerHTML = renderConvertedNote(res, idx);
+  } catch (err) {
+    box.innerHTML = `<div class="warn">Conversion failed: ${escapeHtml(String(err.message || err))}</div>`;
+  }
+}
+
+async function saveConvertedNote(idx) {
+  const c = convertedStore[idx];
+  const box = document.getElementById(`convert-result-${idx}`);
+  try {
+    const res = await postJSON("/api/render", {
+      data: resultStore[idx].extraction.data,
+      schema_name: c.schemaName,
+      source_filename: c.sourceFilename,
+      save: true,
+    });
+    convertedStore[idx] = { ...res, schemaName: c.schemaName, sourceFilename: c.sourceFilename };
+    box.innerHTML = renderConvertedNote(res, idx);
+    await loadNotes();
+    graph.reload();
+  } catch (err) {
+    box.innerHTML += `<div class="warn">Save failed: ${escapeHtml(String(err.message || err))}</div>`;
+  }
+}
+
+// Delegated click handling: result cards get replaced/added dynamically
+// (progress -> final, extraction -> converted), so one listener on the
+// container is simpler and more robust than re-wiring after every update.
+$("#upload-result").addEventListener("click", async (e) => {
+  const dlJsonBtn = e.target.closest(".download-json-btn");
+  const convertBtn = e.target.closest(".convert-btn");
+  const dlMdBtn = e.target.closest(".download-md-btn");
+  const saveBtn = e.target.closest(".save-converted-btn");
+  const chip = e.target.closest(".chip");
+
+  if (dlJsonBtn) {
+    const r = resultStore[dlJsonBtn.dataset.idx];
+    const base = r.filename.replace(/\.[^./]+$/, "");
+    downloadBlob(`${base}.json`, JSON.stringify(r.extraction.data, null, 2), "application/json");
+  } else if (convertBtn) {
+    await convertToMarkdown(convertBtn.dataset.idx);
+  } else if (saveBtn) {
+    await saveConvertedNote(saveBtn.dataset.idx);
+  } else if (dlMdBtn) {
+    const idx = dlMdBtn.dataset.idx;
+    const src = convertedStore[idx] || resultStore[idx];
+    const base = (src.title || "note").replace(/[^\w\-]+/g, "-");
+    downloadBlob(`${base}.md`, src.note, "text/markdown");
+  } else if (chip) {
+    openNote(chip.dataset.slug);
+  }
+});
 
 /* =====================================================================
    Force-directed graph (canvas, no libraries)

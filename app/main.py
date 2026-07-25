@@ -21,9 +21,9 @@ from . import render as render_mod
 from .config import settings
 from .graph import build_graph
 from .llm import llm_status
-from .models import GenerateIn, NoteIn, QueryIn
+from .models import GenerateIn, NoteIn, QueryIn, RenderIn
 from .retrieval import get_retriever
-from .schemas import InvalidSchema, SchemaStore
+from .schemas import InvalidSchema, SchemaStore, validate_instance
 from .vault import Vault, slugify
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -206,13 +206,72 @@ def delete_schema(name: str):
 
 
 # --------------------------------------------------------------------------
-# Upload documents (PDF/Word/Excel/CSV/text) -> compiled Markdown notes
+# Convert a previously-extracted JSON object into a Markdown note. This is
+# the explicit second step after schema-based extraction (POST /api/ingest
+# with schema_name) — no LLM call here, just deterministic rendering, so it
+# runs instantly and needs no local model to be running.
 # --------------------------------------------------------------------------
+@app.post("/api/render")
+def render_json(payload: RenderIn):
+    schema = _load_schema_or_404(payload.schema_name) if payload.schema_name else None
+    errors = validate_instance(payload.data, schema) if schema else []
+    note_md = render_mod.json_to_markdown(payload.data, schema)
+    title = _derive_title(payload.data, payload.source_filename or "Untitled")
+    tags = _derive_tags(payload.data)
+
+    saved = None
+    if payload.save:
+        note = vault.save(title, note_md, tags)
+        saved = note.slug
+        vault.save_data(note.slug, {
+            "schema": payload.schema_name,
+            "source_filename": payload.source_filename,
+            "valid": not errors,
+            "errors": errors,
+            "data": payload.data,
+        })
+
+    return {
+        "title": title,
+        "slug": slugify(title),
+        "note": note_md,
+        "tags": tags,
+        "valid": not errors,
+        "errors": errors,
+        "saved": saved,
+    }
+
+
+# --------------------------------------------------------------------------
+# Upload documents (PDF/Word/Excel/CSV/text) -> compiled Markdown notes,
+# or -- when a JSON Schema is selected -- a two-step flow:
+#   1) /api/ingest(/stream) extracts + validates JSON only (no Markdown yet)
+#   2) POST /api/render explicitly converts that JSON into a Markdown note,
+#      with clearly defined sections ordered/labeled per the schema.
+# This lets a user inspect or download the raw extracted JSON before ever
+# generating a note from it.
+# --------------------------------------------------------------------------
+def _derive_title(data: dict, fallback_name: str) -> str:
+    title_val = data.get("title") or data.get("name")
+    if title_val:
+        return str(title_val).strip()
+    return Path(fallback_name).stem.replace("-", " ").replace("_", " ")
+
+
+def _derive_tags(data: dict) -> list[str]:
+    raw_tags = data.get("tags")
+    return [str(t) for t in raw_tags] if isinstance(raw_tags, list) else []
+
+
 def _process_file(
     name: str, data: bytes, *, schema: dict | None, schema_name: str,
     format_spec: str, save: bool, on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
-    """Extract + compile (or schema-extract) one document into a note.
+    """Extract one document's text, then either:
+      - schema selected: extract + validate structured JSON only (the
+        Markdown conversion is a separate, explicit step — see /api/render).
+      - no schema: compile straight to a Markdown note (single step, as
+        before), optionally saving it to the vault.
 
     Shared by the plain /api/ingest endpoint and the streaming
     /api/ingest/stream endpoint. `on_progress`, if given, is forwarded into
@@ -223,7 +282,6 @@ def _process_file(
         if on_progress:
             on_progress({"step": step, **info})
 
-    # 1) Extract text from the document.
     emit("extracting_text")
     try:
         extracted = ingest_mod.extract(name, data)
@@ -237,35 +295,45 @@ def _process_file(
         }
     emit("extracted_text", kind=extracted.kind, chars=len(extracted.text))
 
-    # 2) Turn it into a note via DSPy (LLM): either free-form (format_spec)
-    #    or, if a schema was chosen, strict JSON-schema extraction rendered
-    #    to Markdown. Fall back to raw extracted text if the LLM is offline.
-    extraction_info = None
-    try:
-        from . import dspy_modules
+    if schema is not None:
+        try:
+            from . import dspy_modules
 
-        if schema is not None:
             extraction = dspy_modules.extract_structured(
                 name, extracted.text, schema, max_chunks=settings.max_chunks,
                 chunk_size=settings.chunk_size, on_progress=on_progress)
-            title_val = extraction.data.get("title") or extraction.data.get("name")
-            title = str(title_val).strip() if title_val else Path(name).stem.replace("-", " ").replace("_", " ")
-            note_md = render_mod.json_to_markdown(extraction.data, schema)
-            raw_tags = extraction.data.get("tags")
-            tags = [str(t) for t in raw_tags] if isinstance(raw_tags, list) else []
-            used_llm = True
-            extraction_info = {
+        except Exception:
+            emit("llm_offline")
+            return {
+                "filename": name,
+                "error": (
+                    f"Local LLM unavailable — could not extract fields from "
+                    f"`{name}` per schema '{schema_name}'. Start Ollama and retry."
+                ),
+            }
+        return {
+            "filename": name,
+            "kind": extracted.kind,
+            "meta": extracted.meta,
+            "llm": True,
+            "chars": len(extracted.text),
+            "extraction": {
                 "schema": schema_name,
                 "valid": not extraction.errors,
                 "errors": extraction.errors,
                 "data": extraction.data,
-            }
-        else:
-            compiled = dspy_modules.compile_document(
-                name, extracted.text, format_spec, max_chunks=settings.max_chunks,
-                chunk_size=settings.chunk_size, on_progress=on_progress)
-            title, note_md, tags, used_llm = (
-                compiled.title, compiled.note, compiled.tags, True)
+            },
+        }
+
+    # No schema: single-step compile straight to Markdown (unchanged behavior).
+    try:
+        from . import dspy_modules
+
+        compiled = dspy_modules.compile_document(
+            name, extracted.text, format_spec, max_chunks=settings.max_chunks,
+            chunk_size=settings.chunk_size, on_progress=on_progress)
+        title, note_md, tags, used_llm = (
+            compiled.title, compiled.note, compiled.tags, True)
     except Exception:
         emit("llm_offline")
         title = Path(name).stem.replace("-", " ").replace("_", " ")
@@ -277,25 +345,14 @@ def _process_file(
         tags = []
         used_llm = False
 
-    # 3) Optionally save straight into the vault. When the note came from
-    #    schema-based extraction, persist the validated JSON alongside it
-    #    so it can be viewed later (see GET /api/notes/{slug}/data).
     saved = None
     if save:
         emit("saving")
         note = vault.save(title, note_md, tags)
         saved = note.slug
-        if extraction_info is not None:
-            vault.save_data(note.slug, {
-                "schema": schema_name,
-                "source_filename": name,
-                "valid": extraction_info["valid"],
-                "errors": extraction_info["errors"],
-                "data": extraction_info["data"],
-            })
         emit("saved", slug=saved)
 
-    result = {
+    return {
         "filename": name,
         "kind": extracted.kind,
         "meta": extracted.meta,
@@ -306,9 +363,6 @@ def _process_file(
         "chars": len(extracted.text),
         "saved": saved,
     }
-    if extraction_info is not None:
-        result["extraction"] = extraction_info
-    return result
 
 
 def _load_schema_or_404(schema_name: str) -> dict | None:

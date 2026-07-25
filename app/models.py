@@ -27,3 +27,13 @@ class GenerateIn(BaseModel):
     )
     k: int = Field(4, ge=0, le=20)
     save: bool = False
+
+
+class RenderIn(BaseModel):
+    """Convert a previously-extracted JSON object into a Markdown note —
+    the second, explicit step after schema-based extraction (see
+    POST /api/ingest and the Upload tab's "Convert to Markdown" button)."""
+    data: dict
+    schema_name: str = ""
+    source_filename: str = ""
+    save: bool = False

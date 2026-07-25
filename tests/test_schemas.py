@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.schemas import InvalidSchema, SchemaStore  # noqa: E402
+from app.schemas import InvalidSchema, SchemaStore, validate_instance  # noqa: E402
 
 VALID_SCHEMA = b"""{
   "title": "District Analysis",
@@ -16,6 +16,31 @@ VALID_SCHEMA = b"""{
   },
   "required": ["district"]
 }"""
+
+INSTANCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "district": {"type": "string"},
+        "population": {"type": "integer"},
+    },
+    "required": ["district"],
+}
+
+
+def test_validate_instance_valid():
+    assert validate_instance({"district": "Mysuru", "population": 100}, INSTANCE_SCHEMA) == []
+
+
+def test_validate_instance_missing_required():
+    errors = validate_instance({"population": 100}, INSTANCE_SCHEMA)
+    assert errors
+    assert any("district" in e for e in errors)
+
+
+def test_validate_instance_wrong_type():
+    errors = validate_instance({"district": "Mysuru", "population": "lots"}, INSTANCE_SCHEMA)
+    assert errors
+    assert any("population" in e for e in errors)
 
 
 def test_save_and_load(tmp_path):

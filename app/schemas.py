@@ -81,3 +81,16 @@ class SchemaStore:
             path.unlink()
             return True
         return False
+
+
+def validate_instance(data, schema: dict) -> list[str]:
+    """Validate `data` against a JSON Schema, returning human-readable errors
+    (empty list means valid). Shared by structured extraction and by
+    /api/render, so both use identical validation rules."""
+    validator_cls = jsonschema.validators.validator_for(schema, default=jsonschema.Draft7Validator)
+    validator = validator_cls(schema)
+    errors = []
+    for err in validator.iter_errors(data):
+        path = ".".join(str(p) for p in err.path) or "(root)"
+        errors.append(f"{path}: {err.message}")
+    return errors

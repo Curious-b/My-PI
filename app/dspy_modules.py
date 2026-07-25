@@ -16,6 +16,7 @@ from typing import Callable
 
 from .llm import configure_lm
 from .retrieval import Hit
+from .schemas import validate_instance
 from .vault import Vault, Note
 
 ProgressFn = Callable[[dict], None]
@@ -292,19 +293,6 @@ def _parse_json_block(text: str) -> dict:
         raise
 
 
-def _schema_errors(data, schema: dict) -> list[str]:
-    """Validate `data` against a JSON Schema, returning human-readable errors."""
-    import jsonschema
-
-    validator_cls = jsonschema.validators.validator_for(schema, default=jsonschema.Draft7Validator)
-    validator = validator_cls(schema)
-    errors = []
-    for err in validator.iter_errors(data):
-        path = ".".join(str(p) for p in err.path) or "(root)"
-        errors.append(f"{path}: {err.message}")
-    return errors
-
-
 @dataclass
 class Extraction:
     data: dict
@@ -349,7 +337,7 @@ def extract_structured(source: str, text: str, schema: dict, max_chunks: int = 8
     _emit(on_progress, "validating")
     try:
         data = _parse_json_block(raw)
-        errors = _schema_errors(data, schema) if isinstance(data, dict) else ["Output was not a JSON object"]
+        errors = validate_instance(data, schema) if isinstance(data, dict) else ["Output was not a JSON object"]
     except json.JSONDecodeError:
         data, errors = {}, ["Output was not valid JSON"]
 
@@ -363,7 +351,7 @@ def extract_structured(source: str, text: str, schema: dict, max_chunks: int = 8
         try:
             data2 = _parse_json_block(raw2)
             errors2 = (
-                _schema_errors(data2, schema) if isinstance(data2, dict)
+                validate_instance(data2, schema) if isinstance(data2, dict)
                 else ["Output was not a JSON object"]
             )
             if len(errors2) <= len(errors):  # only accept the repair if it's not worse

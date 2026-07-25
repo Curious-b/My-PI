@@ -112,7 +112,10 @@
           <label class="gen-label" id="upload-format-label">Custom format / template for the compiled note</label>
           <textarea id="upload-format" class="gen-format"></textarea>
           <div class="gen-actions">
-            <label><input type="checkbox" id="upload-save" checked /> save to vault</label>
+            <label id="upload-save-row"><input type="checkbox" id="upload-save" checked /> save to vault</label>
+            <span id="schema-mode-hint" class="schema-hint" style="display:none">
+              With a schema selected: extract JSON first, then convert to Markdown as a separate step below.
+            </span>
             <button id="upload-btn" class="btn btn--primary">Compile to Markdown</button>
           </div>
         </div>
