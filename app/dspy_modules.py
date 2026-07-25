@@ -12,10 +12,20 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from typing import Callable
 
 from .llm import configure_lm
 from .retrieval import Hit
 from .vault import Vault, Note
+
+ProgressFn = Callable[[dict], None]
+
+
+def _emit(on_progress: ProgressFn | None, step: str, **info) -> None:
+    """Report a progress step, if the caller wants updates. No-op otherwise —
+    so passing on_progress=None (the default) costs nothing."""
+    if on_progress:
+        on_progress({"step": step, **info})
 
 
 # --------------------------------------------------------------------------
@@ -214,29 +224,36 @@ class Compiled:
 
 
 def compile_document(source: str, text: str, format_spec: str,
-                     max_chunks: int = 8) -> Compiled:
+                     max_chunks: int = 8, on_progress: ProgressFn | None = None) -> Compiled:
     """Turn extracted document text into a structured Markdown note.
 
     For long documents this map-reduces: summarise each chunk, then compile the
     summaries into the final note. Bounded by `max_chunks` to keep it fast on
-    CPU-only local models.
+    CPU-only local models. `on_progress`, if given, is called with a dict
+    describing each step (chunking, per-chunk summarising, composing) so a
+    caller can surface live progress for slow local-model runs.
     """
     modules = _ensure_modules()
     compiler = modules["compile"]
 
     chunks = _chunk(text)
+    _emit(on_progress, "chunked", total_chunks=len(chunks))
     if len(chunks) == 1:
         content = text
     else:
         summaries = []
-        for chunk in chunks[:max_chunks]:
+        todo = chunks[:max_chunks]
+        for i, chunk in enumerate(todo, 1):
+            _emit(on_progress, "summarizing", index=i, total=len(todo))
             pred = compiler.summarise(source=source, chunk=chunk)
             summaries.append(pred.summary)
         if len(chunks) > max_chunks:
             summaries.append("[…remaining sections omitted for length…]")
         content = "\n\n".join(summaries)
 
+    _emit(on_progress, "composing")
     pred = compiler(source=source, content=content, format_spec=format_spec)
+    _emit(on_progress, "composed")
     raw_tags = getattr(pred, "tags", "") or ""
     tags = [t.strip().lstrip("#") for t in raw_tags.replace("\n", ",").split(",") if t.strip()]
     title = (getattr(pred, "title", "") or source).strip()
@@ -286,25 +303,29 @@ class Extraction:
     raw: str = ""
 
 
-def extract_structured(source: str, text: str, schema: dict,
-                        max_chunks: int = 8) -> Extraction:
+def extract_structured(source: str, text: str, schema: dict, max_chunks: int = 8,
+                        on_progress: ProgressFn | None = None) -> Extraction:
     """Extract JSON matching `schema` from a document's text via DSPy.
 
     Long documents are summarised chunk-by-chunk first (like compile_document)
     so the extraction call sees a manageable amount of context. If the model's
     first attempt doesn't validate against the schema, one repair pass is
     tried before giving up and returning the best-effort result with its
-    remaining validation errors attached.
+    remaining validation errors attached. `on_progress`, if given, is called
+    with a dict describing each step for live progress reporting.
     """
     modules = _ensure_modules()
     extractor = modules["extract"]
 
     chunks = _chunk(text)
+    _emit(on_progress, "chunked", total_chunks=len(chunks))
     if len(chunks) == 1:
         content = text
     else:
         summaries = []
-        for chunk in chunks[:max_chunks]:
+        todo = chunks[:max_chunks]
+        for i, chunk in enumerate(todo, 1):
+            _emit(on_progress, "summarizing", index=i, total=len(todo))
             pred = extractor.summarise(source=source, chunk=chunk)
             summaries.append(pred.summary)
         if len(chunks) > max_chunks:
@@ -312,9 +333,11 @@ def extract_structured(source: str, text: str, schema: dict,
         content = "\n\n".join(summaries)
 
     schema_text = json.dumps(schema)
+    _emit(on_progress, "extracting_fields")
     pred = extractor.extract(source=source, content=content, schema_json=schema_text)
     raw = pred.data_json
 
+    _emit(on_progress, "validating")
     try:
         data = _parse_json_block(raw)
         errors = _schema_errors(data, schema) if isinstance(data, dict) else ["Output was not a JSON object"]
@@ -322,10 +345,12 @@ def extract_structured(source: str, text: str, schema: dict,
         data, errors = {}, ["Output was not valid JSON"]
 
     if errors:
+        _emit(on_progress, "repairing", issue_count=len(errors))
         pred2 = extractor.repair(
             schema_json=schema_text, previous_json=raw, errors="; ".join(errors)
         )
         raw2 = pred2.data_json
+        _emit(on_progress, "revalidating")
         try:
             data2 = _parse_json_block(raw2)
             errors2 = (

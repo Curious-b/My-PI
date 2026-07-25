@@ -59,7 +59,7 @@ def test_ingest_with_schema_persists_companion_json(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         dm, "extract_structured",
-        lambda source, text, schema, max_chunks=8: dm.Extraction(
+        lambda source, text, schema, max_chunks=8, on_progress=None: dm.Extraction(
             data={"district": "Mysuru", "population": 3001000}, errors=[], raw="{}"
         ),
     )
@@ -90,7 +90,7 @@ def test_ingest_without_save_does_not_persist_data(tmp_path, monkeypatch):
     c.post("/api/schemas", files={"file": ("district.json", SCHEMA, "application/json")})
     monkeypatch.setattr(
         dm, "extract_structured",
-        lambda source, text, schema, max_chunks=8: dm.Extraction(
+        lambda source, text, schema, max_chunks=8, on_progress=None: dm.Extraction(
             data={"district": "Mysuru"}, errors=[], raw="{}"
         ),
     )
@@ -104,3 +104,63 @@ def test_ingest_without_save_does_not_persist_data(tmp_path, monkeypatch):
     # Nothing was saved, so there is no slug to have data under, and no
     # stray file should have been written anywhere in the temp vault.
     assert list((tmp_path / "vault").glob("*.json")) == []
+
+
+def _read_ndjson(response) -> list[dict]:
+    import json as json_mod
+    lines = [ln for ln in response.text.splitlines() if ln.strip()]
+    return [json_mod.loads(ln) for ln in lines]
+
+
+def test_ingest_stream_reports_progress_events(tmp_path, monkeypatch):
+    c = make_client(tmp_path)
+
+    def fake_compile(source, text, format_spec, max_chunks=8, on_progress=None):
+        if on_progress:
+            on_progress({"step": "chunked", "total_chunks": 2})
+            on_progress({"step": "summarizing", "index": 1, "total": 2})
+            on_progress({"step": "summarizing", "index": 2, "total": 2})
+            on_progress({"step": "composing"})
+            on_progress({"step": "composed"})
+        return dm.Compiled(title="Fake Title", note="Fake note body", tags=["x"])
+
+    monkeypatch.setattr(dm, "compile_document", fake_compile)
+
+    r = c.post(
+        "/api/ingest/stream",
+        files=[("files", ("memo.txt", b"Some content to compile.", "text/plain"))],
+        data={"format_spec": "", "schema_name": "", "save": "false"},
+    )
+    assert r.status_code == 200
+    events = _read_ndjson(r)
+
+    kinds = [e["event"] for e in events]
+    assert kinds[0] == "file_start"
+    assert kinds[-2] == "file_done"
+    assert kinds[-1] == "all_done"
+
+    progress_steps = [e["step"] for e in events if e["event"] == "progress"]
+    assert progress_steps == ["extracting_text", "extracted_text", "chunked",
+                               "summarizing", "summarizing", "composing", "composed"]
+
+    summarizing = [e for e in events if e.get("step") == "summarizing"]
+    assert [e["index"] for e in summarizing] == [1, 2]
+
+    done_event = next(e for e in events if e["event"] == "file_done")
+    assert done_event["result"]["title"] == "Fake Title"
+
+
+def test_ingest_stream_error_event_for_unsupported_file(tmp_path):
+    c = make_client(tmp_path)
+    r = c.post(
+        "/api/ingest/stream",
+        files=[("files", ("photo.png", b"\x89PNG", "image/png"))],
+        data={"format_spec": "", "schema_name": "", "save": "false"},
+    )
+    events = _read_ndjson(r)
+    # Only the initial "reading the file" step fires before it's rejected —
+    # no chunking/summarizing/etc. for a file that never reaches the LLM.
+    progress_steps = [e["step"] for e in events if e["event"] == "progress"]
+    assert progress_steps == ["extracting_text"]
+    done = next(e for e in events if e["event"] == "file_done")
+    assert "error" in done["result"]

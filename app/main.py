@@ -5,10 +5,15 @@ network. Serves a single-page frontend plus a small JSON API.
 """
 from __future__ import annotations
 
+import asyncio
+import json
+import queue
+import threading
 from pathlib import Path
+from typing import Callable
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import ingest as ingest_mod
@@ -203,6 +208,116 @@ def delete_schema(name: str):
 # --------------------------------------------------------------------------
 # Upload documents (PDF/Word/Excel/CSV/text) -> compiled Markdown notes
 # --------------------------------------------------------------------------
+def _process_file(
+    name: str, data: bytes, *, schema: dict | None, schema_name: str,
+    format_spec: str, save: bool, on_progress: Callable[[dict], None] | None = None,
+) -> dict:
+    """Extract + compile (or schema-extract) one document into a note.
+
+    Shared by the plain /api/ingest endpoint and the streaming
+    /api/ingest/stream endpoint. `on_progress`, if given, is forwarded into
+    the DSPy layer and also called for the extraction/save steps here, so a
+    caller can report live progress through a slow local-model run.
+    """
+    def emit(step: str, **info):
+        if on_progress:
+            on_progress({"step": step, **info})
+
+    # 1) Extract text from the document.
+    emit("extracting_text")
+    try:
+        extracted = ingest_mod.extract(name, data)
+    except (ingest_mod.UnsupportedFile, ingest_mod.MissingParser) as exc:
+        return {"filename": name, "error": str(exc)}
+
+    if not extracted.text.strip():
+        return {
+            "filename": name,
+            "error": "No extractable text found (is it a scanned/image-only PDF?).",
+        }
+    emit("extracted_text", kind=extracted.kind, chars=len(extracted.text))
+
+    # 2) Turn it into a note via DSPy (LLM): either free-form (format_spec)
+    #    or, if a schema was chosen, strict JSON-schema extraction rendered
+    #    to Markdown. Fall back to raw extracted text if the LLM is offline.
+    extraction_info = None
+    try:
+        from . import dspy_modules
+
+        if schema is not None:
+            extraction = dspy_modules.extract_structured(
+                name, extracted.text, schema, on_progress=on_progress)
+            title_val = extraction.data.get("title") or extraction.data.get("name")
+            title = str(title_val).strip() if title_val else Path(name).stem.replace("-", " ").replace("_", " ")
+            note_md = render_mod.json_to_markdown(extraction.data, schema)
+            raw_tags = extraction.data.get("tags")
+            tags = [str(t) for t in raw_tags] if isinstance(raw_tags, list) else []
+            used_llm = True
+            extraction_info = {
+                "schema": schema_name,
+                "valid": not extraction.errors,
+                "errors": extraction.errors,
+                "data": extraction.data,
+            }
+        else:
+            compiled = dspy_modules.compile_document(
+                name, extracted.text, format_spec, on_progress=on_progress)
+            title, note_md, tags, used_llm = (
+                compiled.title, compiled.note, compiled.tags, True)
+    except Exception:
+        emit("llm_offline")
+        title = Path(name).stem.replace("-", " ").replace("_", " ")
+        note_md = (
+            f"> ⚠ Local LLM offline — showing raw extracted text from "
+            f"`{name}` ({extracted.kind}). Start Ollama to auto-compile.\n\n"
+            + extracted.text
+        )
+        tags = []
+        used_llm = False
+
+    # 3) Optionally save straight into the vault. When the note came from
+    #    schema-based extraction, persist the validated JSON alongside it
+    #    so it can be viewed later (see GET /api/notes/{slug}/data).
+    saved = None
+    if save:
+        emit("saving")
+        note = vault.save(title, note_md, tags)
+        saved = note.slug
+        if extraction_info is not None:
+            vault.save_data(note.slug, {
+                "schema": schema_name,
+                "source_filename": name,
+                "valid": extraction_info["valid"],
+                "errors": extraction_info["errors"],
+                "data": extraction_info["data"],
+            })
+        emit("saved", slug=saved)
+
+    result = {
+        "filename": name,
+        "kind": extracted.kind,
+        "meta": extracted.meta,
+        "title": title,
+        "note": note_md,
+        "tags": tags,
+        "llm": used_llm,
+        "chars": len(extracted.text),
+        "saved": saved,
+    }
+    if extraction_info is not None:
+        result["extraction"] = extraction_info
+    return result
+
+
+def _load_schema_or_404(schema_name: str) -> dict | None:
+    if not schema_name:
+        return None
+    try:
+        return schema_store.load(schema_name)
+    except FileNotFoundError:
+        raise HTTPException(404, f"Schema '{schema_name}' not found")
+
+
 @app.post("/api/ingest")
 async def ingest(
     files: list[UploadFile] = File(...),
@@ -210,99 +325,70 @@ async def ingest(
     schema_name: str = Form(""),
     save: bool = Form(False),
 ):
-    schema = None
-    if schema_name:
-        try:
-            schema = schema_store.load(schema_name)
-        except FileNotFoundError:
-            raise HTTPException(404, f"Schema '{schema_name}' not found")
-
+    schema = _load_schema_or_404(schema_name)
     results = []
     for upload in files:
         data = await upload.read()
         name = upload.filename or "upload"
-
-        # 1) Extract text from the document.
-        try:
-            extracted = ingest_mod.extract(name, data)
-        except (ingest_mod.UnsupportedFile, ingest_mod.MissingParser) as exc:
-            results.append({"filename": name, "error": str(exc)})
-            continue
-
-        if not extracted.text.strip():
-            results.append({
-                "filename": name,
-                "error": "No extractable text found (is it a scanned/image-only PDF?).",
-            })
-            continue
-
-        # 2) Turn it into a note via DSPy (LLM): either free-form (format_spec)
-        #    or, if a schema was chosen, strict JSON-schema extraction rendered
-        #    to Markdown. Fall back to raw extracted text if the LLM is offline.
-        extraction_info = None
-        try:
-            from . import dspy_modules
-
-            if schema is not None:
-                extraction = dspy_modules.extract_structured(name, extracted.text, schema)
-                title_val = extraction.data.get("title") or extraction.data.get("name")
-                title = str(title_val).strip() if title_val else Path(name).stem.replace("-", " ").replace("_", " ")
-                note_md = render_mod.json_to_markdown(extraction.data, schema)
-                raw_tags = extraction.data.get("tags")
-                tags = [str(t) for t in raw_tags] if isinstance(raw_tags, list) else []
-                used_llm = True
-                extraction_info = {
-                    "schema": schema_name,
-                    "valid": not extraction.errors,
-                    "errors": extraction.errors,
-                    "data": extraction.data,
-                }
-            else:
-                compiled = dspy_modules.compile_document(name, extracted.text, format_spec)
-                title, note_md, tags, used_llm = (
-                    compiled.title, compiled.note, compiled.tags, True)
-        except Exception:
-            title = Path(name).stem.replace("-", " ").replace("_", " ")
-            note_md = (
-                f"> ⚠ Local LLM offline — showing raw extracted text from "
-                f"`{name}` ({extracted.kind}). Start Ollama to auto-compile.\n\n"
-                + extracted.text
-            )
-            tags = []
-            used_llm = False
-
-        # 3) Optionally save straight into the vault. When the note came from
-        #    schema-based extraction, persist the validated JSON alongside it
-        #    so it can be viewed later (see GET /api/notes/{slug}/data).
-        saved = None
-        if save:
-            note = vault.save(title, note_md, tags)
-            saved = note.slug
-            if extraction_info is not None:
-                vault.save_data(note.slug, {
-                    "schema": schema_name,
-                    "source_filename": name,
-                    "valid": extraction_info["valid"],
-                    "errors": extraction_info["errors"],
-                    "data": extraction_info["data"],
-                })
-
-        result = {
-            "filename": name,
-            "kind": extracted.kind,
-            "meta": extracted.meta,
-            "title": title,
-            "note": note_md,
-            "tags": tags,
-            "llm": used_llm,
-            "chars": len(extracted.text),
-            "saved": saved,
-        }
-        if extraction_info is not None:
-            result["extraction"] = extraction_info
-        results.append(result)
-
+        results.append(_process_file(
+            name, data, schema=schema, schema_name=schema_name,
+            format_spec=format_spec, save=save,
+        ))
     return {"results": results}
+
+
+@app.post("/api/ingest/stream")
+async def ingest_stream(
+    files: list[UploadFile] = File(...),
+    format_spec: str = Form(""),
+    schema_name: str = Form(""),
+    save: bool = Form(False),
+):
+    """Same as /api/ingest, but streams newline-delimited JSON progress
+    events as each file is processed — so the UI can show live progress
+    (which chunk is being summarised, composing, validating, saving...)
+    instead of one opaque wait for slow local-model runs.
+    """
+    schema = _load_schema_or_404(schema_name)
+    # Read all uploads up front: UploadFile's underlying stream isn't valid
+    # once we start yielding a streaming response.
+    file_payloads = [((u.filename or "upload"), await u.read()) for u in files]
+
+    def emit_line(payload: dict) -> str:
+        return json.dumps(payload) + "\n"
+
+    async def event_source():
+        loop = asyncio.get_event_loop()
+        for name, data in file_payloads:
+            yield emit_line({"event": "file_start", "filename": name})
+
+            q: queue.Queue = queue.Queue()
+            DONE = object()
+
+            def on_progress(info, _q=q, _name=name):
+                _q.put({"event": "progress", "filename": _name, **info})
+
+            def worker(_q=q):
+                try:
+                    result = _process_file(
+                        name, data, schema=schema, schema_name=schema_name,
+                        format_spec=format_spec, save=save, on_progress=on_progress,
+                    )
+                    _q.put({"event": "file_done", "filename": name, "result": result})
+                finally:
+                    _q.put(DONE)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+            while True:
+                item = await loop.run_in_executor(None, q.get)
+                if item is DONE:
+                    break
+                yield emit_line(item)
+
+        yield emit_line({"event": "all_done"})
+
+    return StreamingResponse(event_source(), media_type="application/x-ndjson")
 
 
 # --------------------------------------------------------------------------

@@ -17,10 +17,6 @@ const api = {
     return r.json();
   },
   async del(url) { return (await fetch(url, { method: "DELETE" })).json(); },
-  async upload(url, formData) {
-    const r = await fetch(url, { method: "POST", body: formData });
-    return r.json();
-  },
 };
 
 let currentSlug = null;
@@ -349,13 +345,40 @@ $("#schema-delete-btn").addEventListener("click", async () => {
   await loadSchemas();
 });
 
-/* ---- Upload documents -> Markdown (free-text template or JSON schema) ---- */
+/* ---- Upload documents -> Markdown, with live progress ---- */
+const STEP_LABELS = {
+  extracting_text: () => "Reading file…",
+  extracted_text: (e) => `Extracted ${e.chars.toLocaleString()} characters (${e.kind})`,
+  chunked: (e) => e.total_chunks > 1 ? `Split into ${e.total_chunks} chunk(s)` : "Fits in a single pass",
+  summarizing: (e) => `Summarizing chunk ${e.index}/${e.total}…`,
+  composing: () => "Composing Markdown note…",
+  composed: () => "Note composed",
+  extracting_fields: () => "Extracting fields per schema…",
+  validating: () => "Validating extracted JSON…",
+  repairing: (e) => `Fixing ${e.issue_count} validation issue(s)…`,
+  revalidating: () => "Re-validating…",
+  llm_offline: () => "Local LLM unavailable — using raw extracted text",
+  saving: () => "Saving to vault…",
+  saved: (e) => `Saved as "${e.slug}"`,
+};
+function stepLabel(evt) {
+  const fn = STEP_LABELS[evt.step];
+  return fn ? fn(evt) : evt.step;
+}
+
 $("#upload-btn").addEventListener("click", async () => {
-  const files = uploadInput.files;
+  const files = Array.from(uploadInput.files);
   if (!files.length) { alert("Choose one or more files first."); return; }
   const schemaName = $("#schema-select").value;
   const box = $("#upload-result");
-  box.innerHTML = `<div class="spinner">Extracting${schemaName ? " & extracting fields per schema" : " & compiling"} for ${files.length} file(s) with DSPy… (large files take a while)</div>`;
+
+  // One live-progress card per file, in upload order.
+  box.innerHTML = files.map((f, i) => `
+    <div class="ingest-card" id="ingest-card-${i}">
+      <div class="ingest-head"><strong>${escapeHtml(f.name)}</strong><span class="meta">queued…</span></div>
+      <div class="progress-step">waiting to start…</div>
+    </div>`).join("");
+  const nameToIndex = new Map(files.map((f, i) => [f.name, i]));
 
   const fd = new FormData();
   for (const f of files) fd.append("files", f);
@@ -363,16 +386,61 @@ $("#upload-btn").addEventListener("click", async () => {
   fd.append("schema_name", schemaName);
   fd.append("save", $("#upload-save").checked ? "true" : "false");
 
-  let data;
-  try { data = await api.upload("/api/ingest", fd); }
-  catch (err) { box.innerHTML = `<div class="warn">Upload failed: ${escapeHtml(String(err))}</div>`; return; }
+  let response;
+  try {
+    response = await fetch("/api/ingest/stream", { method: "POST", body: fd });
+  } catch (err) {
+    box.innerHTML = `<div class="warn">Upload failed: ${escapeHtml(String(err))}</div>`;
+    return;
+  }
+  if (!response.ok || !response.body) {
+    box.innerHTML = `<div class="warn">Upload failed (status ${response.status}).</div>`;
+    return;
+  }
 
-  box.innerHTML = (data.results || []).map(renderIngestResult).join("");
-  box.querySelectorAll(".chip").forEach((c) =>
-    c.addEventListener("click", () => openNote(c.dataset.slug)));
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buffer.indexOf("\n")) !== -1) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+      if (line) handleIngestEvent(JSON.parse(line), nameToIndex);
+    }
+  }
+  if (buffer.trim()) handleIngestEvent(JSON.parse(buffer.trim()), nameToIndex);
+
   await loadNotes();
   graph.reload();
 });
+
+function handleIngestEvent(evt, nameToIndex) {
+  if (evt.event === "all_done") return;
+  const idx = nameToIndex.get(evt.filename);
+  if (idx === undefined) return;
+  const card = document.getElementById(`ingest-card-${idx}`);
+  if (!card) return;
+
+  if (evt.event === "file_start") {
+    card.querySelector(".meta").textContent = "starting…";
+  } else if (evt.event === "progress") {
+    card.querySelector(".meta").textContent = "working…";
+    card.querySelector(".progress-step").textContent = stepLabel(evt);
+  } else if (evt.event === "file_done") {
+    // renderIngestResult() itself handles both success and { error } shapes.
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = renderIngestResult(evt.result);
+    const newCard = wrapper.firstElementChild;
+    newCard.id = `ingest-card-${idx}`;
+    card.replaceWith(newCard);
+    newCard.querySelectorAll(".chip").forEach((c) =>
+      c.addEventListener("click", () => openNote(c.dataset.slug)));
+  }
+}
 
 function renderIngestResult(r) {
   if (r.error) {

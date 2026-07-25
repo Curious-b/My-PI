@@ -68,7 +68,11 @@ once Ollama is available.
 - **Upload** – drop in **PDF, Word, Excel, CSV or text** files. My-PI extracts
   the content and DSPy compiles each into a structured Markdown note following
   your template. Long documents are summarised chunk-by-chunk, then composed.
-  Without Ollama running you still get the raw extracted text back.
+  Without Ollama running you still get the raw extracted text back. Each file
+  gets a **live progress card** — reading the file, splitting into chunks,
+  summarising chunk *N*/*M*, composing/extracting, validating, saving — so
+  you can see exactly what's happening instead of staring at a static spinner
+  through a slow local-model run.
 
   **Bring your own JSON Schema.** If you have a set of JSON Schema files
   (one per document type — e.g. `district-analysis.json`, `invoice.json`),
@@ -134,6 +138,7 @@ EMBEDDING_MODEL=all-MiniLM-L6-v2
 | POST | `/api/query` | RAG question answering |
 | POST | `/api/generate` | generate a note in a custom format |
 | POST | `/api/ingest` | upload documents → compiled Markdown notes (optionally `schema_name` for structured extraction) |
+| POST | `/api/ingest/stream` | same as above, but streams live newline-delimited JSON progress events as each file is processed |
 | GET | `/api/schemas` | list uploaded JSON Schema templates |
 | GET | `/api/schemas/{name}` | view the full content of one schema |
 | POST | `/api/schemas` | upload a JSON Schema file |
