@@ -215,7 +215,7 @@ def delete_schema(name: str):
 def render_json(payload: RenderIn):
     schema = _load_schema_or_404(payload.schema_name) if payload.schema_name else None
     errors = validate_instance(payload.data, schema) if schema else []
-    note_md = render_mod.json_to_markdown(payload.data, schema)
+    note_md = render_mod.render_document(payload.data, schema)
     title = _derive_title(payload.data, payload.source_filename or "Untitled")
     tags = _derive_tags(payload.data)
 
@@ -251,14 +251,19 @@ def render_json(payload: RenderIn):
 # This lets a user inspect or download the raw extracted JSON before ever
 # generating a note from it.
 # --------------------------------------------------------------------------
-def _derive_title(data: dict, fallback_name: str) -> str:
-    title_val = data.get("title") or data.get("name")
-    if title_val:
-        return str(title_val).strip()
+def _derive_title(data: dict | list, fallback_name: str) -> str:
+    # Array-rooted data (a list of extracted records) has no single natural
+    # title of its own — fall straight through to the filename-derived one.
+    if isinstance(data, dict):
+        title_val = data.get("title") or data.get("name")
+        if title_val:
+            return str(title_val).strip()
     return Path(fallback_name).stem.replace("-", " ").replace("_", " ")
 
 
-def _derive_tags(data: dict) -> list[str]:
+def _derive_tags(data: dict | list) -> list[str]:
+    if not isinstance(data, dict):
+        return []
     raw_tags = data.get("tags")
     return [str(t) for t in raw_tags] if isinstance(raw_tags, list) else []
 

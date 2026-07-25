@@ -29,3 +29,25 @@ def test_parse_fenced_json_no_language_tag():
 def test_parse_json_with_surrounding_prose():
     text = 'Here is the JSON:\n{"a": 1}\nHope that helps!'
     assert _parse_json_block(text) == {"a": 1}
+
+
+# --- Array-rooted schemas (e.g. a list of extracted records) -------------
+def test_parse_raw_array():
+    assert _parse_json_block('[{"a": 1}, {"a": 2}]') == [{"a": 1}, {"a": 2}]
+
+
+def test_parse_fenced_array():
+    text = '```json\n[{"a": 1}]\n```'
+    assert _parse_json_block(text) == [{"a": 1}]
+
+
+def test_parse_array_with_surrounding_prose():
+    text = 'Here you go:\n[{"a": 1}, {"a": 2}]\nLet me know if you need more.'
+    assert _parse_json_block(text) == [{"a": 1}, {"a": 2}]
+
+
+def test_parse_prefers_earliest_bracket_when_both_present():
+    # An array containing a mention of "{}" in a string shouldn't confuse
+    # the fallback slicer into picking the wrong bracket type.
+    text = 'Result: [{"note": "see {}  for details"}]'
+    assert _parse_json_block(text) == [{"note": "see {}  for details"}]

@@ -30,10 +30,12 @@ class GenerateIn(BaseModel):
 
 
 class RenderIn(BaseModel):
-    """Convert a previously-extracted JSON object into a Markdown note —
-    the second, explicit step after schema-based extraction (see
-    POST /api/ingest and the Upload tab's "Convert to Markdown" button)."""
-    data: dict
+    """Convert previously-extracted JSON into a Markdown note — the second,
+    explicit step after schema-based extraction (see POST /api/ingest and
+    the Upload tab's "Convert to Markdown" button). `data` is a JSON object
+    for object-rooted schemas, or a JSON array for array-rooted schemas
+    (e.g. a list of extracted records)."""
+    data: dict | list
     schema_name: str = ""
     source_filename: str = ""
     save: bool = False

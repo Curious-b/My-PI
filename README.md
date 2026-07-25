@@ -101,6 +101,13 @@ once Ollama is available.
   fields extracted, their order, and their section labels are exactly what
   you defined.
 
+  **Array-rooted schemas work too.** If your schema's root `type` is
+  `"array"` — e.g. a document containing several matching records you want
+  extracted as a list — extraction returns a JSON array, and conversion
+  gives each item its own `## Item N: <label>` section (labeled using the
+  item's first schema-declared property), with that item's own fields as
+  sub-sections underneath, ordered per the schema's `items` sub-schema.
+
 ---
 
 ## 🧩 Architecture

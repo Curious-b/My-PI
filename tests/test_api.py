@@ -158,6 +158,68 @@ def test_render_unknown_schema_404s(tmp_path):
     assert r.status_code == 404
 
 
+ARRAY_SCHEMA = b"""{
+  "title": "Strategy Points",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "strategy_point_id": {"type": "string", "title": "Strategy Point ID"},
+      "confidence": {"type": "string"}
+    },
+    "required": ["strategy_point_id"]
+  }
+}"""
+
+
+def test_render_accepts_array_rooted_data(tmp_path):
+    """A schema whose root type is "array" (e.g. a list of extracted
+    records) must not be rejected as "not a JSON object" — this was a real
+    bug: extraction hard-required a dict at the top level."""
+    c = make_client(tmp_path)
+    c.post("/api/schemas", files={"file": ("strategy.json", ARRAY_SCHEMA, "application/json")})
+
+    data = [
+        {"strategy_point_id": "STRATEGY_POINT_789", "confidence": "Verified"},
+        {"strategy_point_id": "STRATEGY_POINT_101112", "confidence": "Verified"},
+    ]
+    r = c.post("/api/render", json={
+        "data": data, "schema_name": "strategy", "source_filename": "memo.txt", "save": True,
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert body["valid"] is True
+    assert "## Item 1: STRATEGY_POINT_789" in body["note"]
+    assert "## Item 2: STRATEGY_POINT_101112" in body["note"]
+    # No "title"/"name" on a list root, so title falls back to the filename.
+    assert body["title"] == "memo"
+
+    slug = body["saved"]
+    assert slug
+    saved_data = c.get(f"/api/notes/{slug}/data").json()
+    assert saved_data["data"] == data
+
+
+def test_extract_structured_accepts_array_output(monkeypatch):
+    """The DSPy-facing parse/validate path itself must accept an array,
+    not just a dict, when the schema's root type is "array"."""
+    schema = {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}}}}
+
+    class FakeExtractor:
+        def summarise(self, **kw):
+            raise AssertionError("short text shouldn't need chunk summarisation")
+
+        def extract(self, **kw):
+            class Pred:
+                data_json = '[{"id": "a"}, {"id": "b"}]'
+            return Pred()
+
+    monkeypatch.setattr(dm, "_ensure_modules", lambda: {"extract": FakeExtractor()})
+    result = dm.extract_structured("doc.txt", "some text", schema)
+    assert result.data == [{"id": "a"}, {"id": "b"}]
+    assert result.errors == []
+
+
 def _read_ndjson(response) -> list[dict]:
     import json as json_mod
     lines = [ln for ln in response.text.splitlines() if ln.strip()]

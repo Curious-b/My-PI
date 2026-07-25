@@ -90,3 +90,49 @@ def json_to_markdown(data: dict, schema: dict | None = None, level: int = 2) -> 
         lines.append("")
 
     return "\n".join(lines).strip() + "\n"
+
+
+def _item_label(item, item_schema: dict | None, index: int) -> str:
+    """Best-effort label for one element of an array-rooted document.
+
+    Prefers the first schema-declared property (keeps section titles
+    meaningful and consistent with the schema's own field order), falling
+    back to common identifying keys, then a plain index.
+    """
+    if isinstance(item, dict):
+        props = (item_schema or {}).get("properties", {})
+        first_key = next(iter(props), None)
+        if first_key and isinstance(item.get(first_key), (str, int, float)) and item[first_key] != "":
+            return str(item[first_key])
+        for key in ("title", "name", "id"):
+            val = item.get(key)
+            if isinstance(val, (str, int, float)) and val != "":
+                return str(val)
+    return f"Item {index}"
+
+
+def render_document(data, schema: dict | None = None) -> str:
+    """Render a schema-validated JSON document to Markdown.
+
+    Handles both object-rooted schemas (the common case — see
+    json_to_markdown) and array-rooted schemas, where `data` is a list of
+    records (e.g. multiple matching items extracted from one document);
+    each element becomes its own top-level section, recursively rendered
+    using the schema's `items` sub-schema for field order/labels.
+    """
+    if isinstance(data, list):
+        item_schema = (schema or {}).get("items")
+        if isinstance(item_schema, list):  # tuple-validation form: use the first
+            item_schema = item_schema[0] if item_schema else None
+        if not data:
+            return "_none_\n"
+        lines: list[str] = []
+        for i, item in enumerate(data, 1):
+            if isinstance(item, dict):
+                lines.append(f"## Item {i}: {_item_label(item, item_schema, i)}")
+                lines.append(json_to_markdown(item, item_schema, level=3))
+            else:
+                lines.append(f"- {item}")
+            lines.append("")
+        return "\n".join(lines).strip() + "\n"
+    return json_to_markdown(data, schema, level=2)

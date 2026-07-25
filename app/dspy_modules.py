@@ -82,25 +82,29 @@ def _build_modules():
 
     class ExtractFields(dspy.Signature):
         """Extract information from the document content strictly according to
-        the given JSON Schema. Output ONLY a single valid JSON object (no
-        markdown code fences, no commentary) whose keys and types conform to
-        the schema. If a value cannot be found in the content, use null. Do
-        not invent facts that are not present in the content."""
+        the given JSON Schema. Output ONLY a single valid JSON value (no
+        markdown code fences, no commentary) whose shape and types conform to
+        the schema — a JSON object if the schema's root type is "object", or
+        a JSON array if the schema's root type is "array" (e.g. a list of
+        matching records, one per relevant item found in the content). If a
+        value cannot be found in the content, use null. Do not invent facts
+        that are not present in the content."""
 
         source: str = dspy.InputField(desc="The source document's filename")
         content: str = dspy.InputField(desc="Extracted text (or summaries) of the document")
         schema_json: str = dspy.InputField(desc="The JSON Schema (as text) to conform to")
-        data_json: str = dspy.OutputField(desc="A single JSON object matching schema_json, nothing else")
+        data_json: str = dspy.OutputField(desc="A single JSON object or array matching schema_json, nothing else")
 
     class RepairFields(dspy.Signature):
         """The previous JSON output failed to validate against the schema. Fix
         it so it validates, preserving as much of the original extracted
-        information as possible. Output ONLY the corrected JSON object."""
+        information as possible. Output ONLY the corrected JSON value (object
+        or array, matching whatever root type the schema declares)."""
 
         schema_json: str = dspy.InputField()
         previous_json: str = dspy.InputField()
         errors: str = dspy.InputField(desc="Validation errors describing what is wrong")
-        data_json: str = dspy.OutputField(desc="The corrected JSON object, nothing else")
+        data_json: str = dspy.OutputField(desc="The corrected JSON object or array, nothing else")
 
     class AskWiki(dspy.Module):
         def __init__(self):
@@ -274,11 +278,12 @@ def compile_document(source: str, text: str, format_spec: str,
 _FENCE_RE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
 
 
-def _parse_json_block(text: str) -> dict:
-    """Pull a JSON object out of raw LLM output.
+def _parse_json_block(text: str) -> dict | list:
+    """Pull a JSON object or array out of raw LLM output.
 
-    Tolerates ```json fences and stray prose before/after the object, since
+    Tolerates ```json fences and stray prose before/after the JSON, since
     local open-source models don't always follow "output only JSON" strictly.
+    Handles both object-rooted ({...}) and array-rooted ([...]) schemas.
     """
     text = (text or "").strip()
     fence = _FENCE_RE.match(text)
@@ -287,15 +292,28 @@ def _parse_json_block(text: str) -> dict:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        start, end = text.find("{"), text.rfind("}")
+        pass
+
+    # Fallback: the model wrapped the JSON in explanatory prose. Try slicing
+    # out the first {...} and the first [...] span, and use whichever starts
+    # earliest in the text (most likely the intended JSON, not a stray brace
+    # mentioned in the prose).
+    candidates: list[tuple[int, str]] = []
+    for open_ch, close_ch in (("{", "}"), ("[", "]")):
+        start, end = text.find(open_ch), text.rfind(close_ch)
         if start != -1 and end != -1 and end > start:
-            return json.loads(text[start:end + 1])
-        raise
+            candidates.append((start, text[start:end + 1]))
+    for _, chunk in sorted(candidates, key=lambda c: c[0]):
+        try:
+            return json.loads(chunk)
+        except json.JSONDecodeError:
+            continue
+    raise json.JSONDecodeError("No valid JSON object or array found", text, 0)
 
 
 @dataclass
 class Extraction:
-    data: dict
+    data: dict | list
     errors: list = field(default_factory=list)
     raw: str = ""
 
@@ -337,7 +355,10 @@ def extract_structured(source: str, text: str, schema: dict, max_chunks: int = 8
     _emit(on_progress, "validating")
     try:
         data = _parse_json_block(raw)
-        errors = validate_instance(data, schema) if isinstance(data, dict) else ["Output was not a JSON object"]
+        errors = (
+            validate_instance(data, schema) if isinstance(data, (dict, list))
+            else ["Output was not a JSON object or array"]
+        )
     except json.JSONDecodeError:
         data, errors = {}, ["Output was not valid JSON"]
 
@@ -351,8 +372,8 @@ def extract_structured(source: str, text: str, schema: dict, max_chunks: int = 8
         try:
             data2 = _parse_json_block(raw2)
             errors2 = (
-                validate_instance(data2, schema) if isinstance(data2, dict)
-                else ["Output was not a JSON object"]
+                validate_instance(data2, schema) if isinstance(data2, (dict, list))
+                else ["Output was not a JSON object or array"]
             )
             if len(errors2) <= len(errors):  # only accept the repair if it's not worse
                 data, errors, raw = data2, errors2, raw2

@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.render import humanize, json_to_markdown  # noqa: E402
+from app.render import humanize, json_to_markdown, render_document  # noqa: E402
 
 
 def test_humanize_snake_case():
@@ -92,3 +92,79 @@ def test_unschemad_extra_keys_still_render_at_the_end():
     assert "## District" in md
     assert "## Extra Note" in md
     assert md.index("## District") < md.index("## Extra Note")
+
+
+# --- render_document(): array-rooted schemas ------------------------------
+STRATEGY_POINT_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "strategy_point_id": {"type": "string", "title": "Strategy Point ID"},
+            "delivery_mechanism_or_target": {"type": "array", "items": {"type": "string"}},
+            "named_leaders": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "named_leader_id": {"type": "string"},
+                        "name": {"type": "string"},
+                    },
+                },
+            },
+            "confidence": {"type": "string"},
+        },
+    },
+}
+
+STRATEGY_POINTS = [
+    {
+        "strategy_point_id": "STRATEGY_POINT_789",
+        "delivery_mechanism_or_target": ["Chandrakant Kothiwale", "Uttam Patil"],
+        "named_leaders": [
+            {"named_leader_id": "LEADER_123", "name": "Chandrakant Kothiwale"},
+            {"named_leader_id": "LEADER_456", "name": "Uttam Patil"},
+        ],
+        "confidence": "Verified",
+    },
+    {
+        "strategy_point_id": "STRATEGY_POINT_101112",
+        "delivery_mechanism_or_target": ["Chandrakant Kothiwale"],
+        "named_leaders": [{"named_leader_id": "LEADER_789", "name": "Chandrakant Kothiwale"}],
+        "confidence": "Verified",
+    },
+]
+
+
+def test_render_document_dispatches_dict_to_json_to_markdown():
+    schema = {"properties": {"district": {}}}
+    assert render_document({"district": "Mysuru"}, schema) == json_to_markdown({"district": "Mysuru"}, schema)
+
+
+def test_render_document_array_root_one_section_per_item():
+    md = render_document(STRATEGY_POINTS, STRATEGY_POINT_SCHEMA)
+    assert "## Item 1: STRATEGY_POINT_789" in md
+    assert "## Item 2: STRATEGY_POINT_101112" in md
+    # Item label comes from the first schema-declared property.
+    assert md.index("## Item 1:") < md.index("## Item 2:")
+
+
+def test_render_document_array_item_nested_fields_render():
+    md = render_document(STRATEGY_POINTS, STRATEGY_POINT_SCHEMA)
+    # Nested list-of-scalars ("delivery_mechanism_or_target") -> bullets.
+    assert "- Chandrakant Kothiwale" in md
+    assert "- Uttam Patil" in md
+    # Nested list-of-dicts ("named_leaders") -> table with humanized columns.
+    assert "| Named Leader Id | Name |" in md
+    assert "| LEADER_123 | Chandrakant Kothiwale |" in md
+
+
+def test_render_document_empty_array():
+    assert render_document([], STRATEGY_POINT_SCHEMA) == "_none_\n"
+
+
+def test_render_document_array_item_without_matching_schema_property_falls_back():
+    # No "title"/"name"/"id" and the item schema's first property isn't
+    # present in the item -> falls back to a plain index label.
+    md = render_document([{"other": "value"}], {"type": "array", "items": {"properties": {"missing": {}}}})
+    assert "## Item 1: Item 1" in md
