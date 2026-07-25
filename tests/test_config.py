@@ -11,7 +11,7 @@ from app.config import _load_dotenv  # noqa: E402
 
 ENV_KEYS = ["LLM_MODEL", "HOST", "PORT", "VAULT_DIR", "SCHEMA_DIR",
             "OLLAMA_BASE_URL", "EMBEDDING_MODEL", "CHROMA_DIR",
-            "CHUNK_SIZE", "MAX_CHUNKS"]
+            "CHUNK_SIZE", "MAX_CHUNKS", "OLLAMA_NUM_CTX", "LLM_MAX_TOKENS"]
 
 
 def _clean_env():

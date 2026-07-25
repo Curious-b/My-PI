@@ -108,6 +108,37 @@ once Ollama is available.
   item's first schema-declared property), with that item's own fields as
   sub-sections underneath, ordered per the schema's `items` sub-schema.
 
+  **Large or richly-annotated schemas need more context window.** The
+  entire schema is sent as text on every extraction call — a schema with
+  many sections and per-field instructions can easily be several thousand
+  tokens before the document content is even added. Ollama's *default*
+  context window is often only ~2048–4096 tokens, well short of that,
+  and once exceeded the model silently loses track of most of the prompt
+  — symptoms look like: only a couple of sections attempted, stray keys
+  that aren't in your schema, or malformed/garbled JSON. If you see this:
+  - Raise `OLLAMA_NUM_CTX` in `.env` (default `8192`; try `16384` or higher
+    for very large schemas — needs more RAM/VRAM the higher you go) and
+    `LLM_MAX_TOKENS` (default `4096`) so the model has room to both read
+    the whole schema and fully generate a rich structure.
+  - Consider **splitting a very large schema into several smaller files**,
+    one per top-level section, and running extraction once per file against
+    the same document. This isn't just a workaround — schemas designed for
+    incremental population (e.g. one that documents an "append over
+    multiple source passes" convention) are already built around exactly
+    this workflow.
+  - Note that schema files using custom annotation keys (e.g. `_definition`,
+    `_type`, `_source_hint` instead of standard JSON Schema `type`/
+    `properties`) aren't validated by `jsonschema` in any meaningful way —
+    there are no real constraints for it to check, so `valid: true` there
+    just means "no JSON Schema keyword was violated," not "every field was
+    correctly extracted." Correctness for that style of schema depends
+    entirely on the model faithfully following your per-field instructions,
+    which is precisely why giving it enough context window matters.
+  - A schema this rich is a real workload for a small local model
+    regardless of context size — if results stay unreliable after raising
+    context, a larger model (still free, still local) may do meaningfully
+    better on this specific case.
+
 ---
 
 ## 🧩 Architecture
@@ -181,6 +212,10 @@ API — you're trading speed for privacy and cost. If it feels too slow:
 4. The per-chunk summarisation and JSON-repair steps already use
    `dspy.Predict` rather than `dspy.ChainOfThought` — no reasoning pass, so
    fewer tokens generated per call. This is built in, nothing to configure.
+5. **Large schemas need `OLLAMA_NUM_CTX`/`LLM_MAX_TOKENS` raised**, not just
+   speed tuning — see the "Large or richly-annotated schemas" note above.
+   This is about *fitting* the whole schema + content in context at all,
+   not just going faster.
 
 With the live progress cards (Upload tab), you can also now see *which*
 step is slow — if it's stuck on "Summarizing chunk 1/8…", that's model

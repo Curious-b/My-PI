@@ -24,7 +24,8 @@ def configure_lm() -> tuple[bool, str | None]:
             api_base=settings.ollama_base_url,
             api_key="",          # Ollama needs no key
             temperature=0.3,
-            max_tokens=2000,
+            max_tokens=settings.llm_max_tokens,
+            num_ctx=settings.ollama_num_ctx,  # Ollama-specific; forwarded via LiteLLM
         )
         dspy.configure(lm=lm)
         _configured = True

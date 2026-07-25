@@ -41,6 +41,16 @@ class Settings:
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     llm_model: str = os.getenv("LLM_MODEL", "ollama_chat/llama3.1")
 
+    # Ollama's default context window (often ~2048-4096 tokens) is easily
+    # exceeded by a large JSON Schema plus document content, causing the
+    # model to silently lose track of most of the prompt. Raise this if
+    # extraction against a large/rich schema comes back garbled or sparse
+    # (see README "Making extraction faster" / large-schema guidance).
+    ollama_num_ctx: int = int(os.getenv("OLLAMA_NUM_CTX", "8192"))
+    # Output token budget. A schema with many sections/fields needs more
+    # room to be fully populated than a small flat schema does.
+    llm_max_tokens: int = int(os.getenv("LLM_MAX_TOKENS", "4096"))
+
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
     chroma_dir: Path = PROJECT_ROOT / os.getenv("CHROMA_DIR", ".chroma")
 
