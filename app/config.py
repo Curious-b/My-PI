@@ -7,15 +7,22 @@ from pathlib import Path
 
 
 def _load_dotenv(path: Path) -> None:
-    """Minimal .env loader so we don't require an extra dependency."""
+    """Minimal .env loader so we don't require an extra dependency.
+
+    If a key appears more than once in the file, the last line wins (what
+    anyone hand-editing the file would expect). Real OS-level environment
+    variables still take priority over anything in the file.
+    """
     if not path.exists():
         return
+    values: dict[str, str] = {}
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        key, value = key.strip(), value.strip().strip('"').strip("'")
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    for key, value in values.items():
         os.environ.setdefault(key, value)
 
 
